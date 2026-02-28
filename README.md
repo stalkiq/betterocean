@@ -10,13 +10,10 @@ Standalone static scaffold that mirrors the requested three-pane command UI:
 ## Run locally
 
 ```bash
-npm install
-npm run dev
+npx serve
 ```
 
-Then open the localhost URL shown in the terminal (e.g. **http://localhost:3000**).
-
-Alternatively, open `index.html` directly in a browser or use any static server.
+Then open **http://localhost:3000** (or the URL shown). Or open `index.html` in a browser, or run `python3 -m http.server 8080` and open http://localhost:8080.
 
 ## Notes
 

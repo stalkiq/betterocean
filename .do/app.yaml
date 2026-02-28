@@ -12,4 +12,4 @@ static_sites:
     github:
       branch: main
       deploy_on_push: true
-      repo: YOUR_GITHUB_USERNAME/betterocean
+      repo: stalkiq/betterocean
