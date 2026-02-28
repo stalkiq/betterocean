@@ -27,11 +27,18 @@ export async function main(event) {
     };
   }
 
-  const url = `${endpoint.replace(/\/+$/, '')}/api/v1/chat/completions`;
+  const url = endpoint.includes('api/v1') 
+    ? `${endpoint.replace(/\/+$/, '')}/chat/completions`
+    : `${endpoint.replace(/\/+$/, '')}/api/v1/chat/completions`;
+
   try {
     const res = await axios.post(
       url,
-      { messages, stream: false },
+      { 
+        model: process.env.GRADIENT_MODEL || "openai-gpt-oss-120b", 
+        messages, 
+        stream: false 
+      },
       {
         headers: {
           'Content-Type': 'application/json',
