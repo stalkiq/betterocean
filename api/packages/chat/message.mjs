@@ -27,9 +27,9 @@ export async function main(event) {
     };
   }
 
-  const url = endpoint.includes('api/v1') 
+  const url = endpoint.includes('v1') 
     ? `${endpoint.replace(/\/+$/, '')}/chat/completions`
-    : `${endpoint.replace(/\/+$/, '')}/api/v1/chat/completions`;
+    : `${endpoint.replace(/\/+$/, '')}/v1/chat/completions`;
 
   try {
     const res = await axios.post(
