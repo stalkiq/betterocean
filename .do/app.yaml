@@ -35,7 +35,6 @@ functions:
       repo: stalkiq/betterocean
     routes:
       - path: /api
-        preserve_path_prefix: true
     envs:
       - key: GRADIENT_AGENT_ENDPOINT
         scope: RUN_AND_BUILD_TIME
