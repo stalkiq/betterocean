@@ -1,11 +1,9 @@
-# BetterOcean UI Scaffold
+# BetterOcean
 
-Standalone static scaffold that mirrors the requested three-pane command UI:
+Static web app shell with serverless APIs for an **investing platform** powered by [DigitalOcean Gradient™ AI](https://docs.digitalocean.com/products/gradient-ai-platform). Charles Schwab API integration can be added later.
 
-- Left icon rail with hollow buttons
-- Left assets menu
-- Center workspace with tabs and assets table
-- Right assistant chat panel
+- **Frontend:** Static HTML/CSS/JS (three-pane UI: rail, workspace, Gradient™ AI chat).
+- **Backend:** Serverless function `POST /api/chat/message` proxies chat to Gradient AI; credentials stay on the server so all users get the same assistant without configuring anything in the app.
 
 ## Run locally
 
@@ -13,7 +11,7 @@ Standalone static scaffold that mirrors the requested three-pane command UI:
 npx serve
 ```
 
-Then open **http://localhost:3000** (or the URL shown). Or open `index.html` in a browser, or run `python3 -m http.server 8080` and open http://localhost:8080.
+Then open **http://localhost:3000** (or the URL shown). Chat will only work when deployed (the `/api` route is served by App Platform). Or open `index.html` in a browser for UI only.
 
 ## Notes
 
@@ -36,49 +34,39 @@ The **DO** rail tab shows your DigitalOcean account info and droplets using the 
 
 The app calls `https://api.digitalocean.com` for `GET /v2/account` and `GET /v2/droplets` as described in the public API spec.
 
-## Gradient™ AI (chat)
+## Gradient™ AI (chat, in the background)
 
-The right-hand **Assistant** chat is wired to [DigitalOcean Gradient™ AI Platform](https://docs.digitalocean.com/products/gradient-ai-platform). You can connect it to a Gradient AI agent so the chat uses your agent (with optional knowledge bases, guardrails, and models).
+The right-hand chat is powered by Gradient AI via a **serverless API**. Users do not configure anything; you set Gradient once in App Platform.
 
 1. **Create an agent**  
-   In the [DigitalOcean Control Panel](https://cloud.digitalocean.com), go to **Agent Platform** → create or open a workspace → **Create Agent**. Name it, set instructions, choose a model, and create the agent.
+   In the [DigitalOcean Control Panel](https://cloud.digitalocean.com), go to **Agent Platform** → create or open a workspace → **Create Agent**. Name it, set instructions (e.g. for investing/markets), choose a model, and create the agent.
 
 2. **Get endpoint and access key**  
-   On the agent’s **Overview** tab, copy the **Endpoint** URL (e.g. `https://xxxxx.agents.do-ai.run`). In the **Settings** tab, under **Endpoint Access Keys**, click **Create Key**, name it, then copy the secret key (it’s shown only once).
+   On the agent’s **Overview** tab, copy the **Endpoint** URL (e.g. `https://xxxxx.agents.do-ai.run`). In the agent’s **Settings** tab, under **Endpoint Access Keys**, click **Create Key**, name it, then copy the secret key (shown only once).
 
-3. **Configure in the app**  
-   Open the **Settings** tab (G) in BetterOcean. In **Gradient™ AI (chat)**, paste the **Agent endpoint URL** and **Endpoint access key**, then click **Save**.
+3. **Configure in App Platform**  
+   In your app’s dashboard, open the **api** (Functions) component → **Settings** → **Environment Variables**. Add:
+   - `GRADIENT_AGENT_ENDPOINT` = the agent endpoint URL  
+   - `GRADIENT_AGENT_KEY` = the endpoint access key (mark as **Encrypt** / secret)  
+   Save and redeploy if needed.
 
-4. **Use the chat**  
-   Type in the Assistant box and send. Messages are sent to your agent’s Chat Completions API (`POST .../api/v1/chat/completions`) with full conversation history. Responses appear in the chat; errors (e.g. wrong key or CORS) show in the thread with a hint to check Settings.
-
-If Gradient is not configured, the chat will ask you to configure it in Settings.
+4. **Chat**  
+   Users type in the chat; the frontend sends `POST /api/chat/message` with the conversation history. The serverless function calls Gradient with the env credentials and returns the reply. No keys or config are exposed to the browser.
 
 ## Host on DigitalOcean (App Platform)
 
-You can deploy this app as a **static website** on [DigitalOcean App Platform](https://www.digitalocean.com/products/app-platform) so it’s available at a public URL (e.g. `https://betterocean-xxxxx.ondigitalocean.app`).
+The app has two components: a **static site** (web shell) and a **Functions** component (serverless API for chat). Deploy from the same repo.
 
 ### 1. Push the repo to GitHub
 
-If it isn’t already there, push this project to a GitHub repo (e.g. `your-username/betterocean`).
+Push this project to a GitHub repo (e.g. `stalkiq/betterocean`).
 
-### 2. Edit the app spec (if needed)
-
-Open `.do/app.yaml` and set `github.repo` to your actual repo:
-
-```yaml
-repo: your-username/betterocean   # use your GitHub owner and repo name
-```
-
-Use the same `branch` you deploy from (e.g. `main`).
-
-### 3. Create the app in DigitalOcean
+### 2. Create or update the app in DigitalOcean
 
 1. Go to [DigitalOcean Apps](https://cloud.digitalocean.com/apps).
-2. Click **Create App**.
-3. Choose **GitHub** as the source and authorize DigitalOcean if prompted.
-4. Select the **betterocean** repo (or the repo you pushed) and the **main** branch.
-5. App Platform will detect the static site from `.do/app.yaml` (or add a Static Site component, set **Source Directory** to `/`, **Environment** to **HTML**).
-6. Click **Next**, review plan (static sites have a free tier), then **Create Resources**.
-
-After the first deployment finishes, your site will be live at the app URL. New pushes to the connected branch will trigger automatic deploys if `deploy_on_push` is `true` in the spec.
+2. Create a new app from GitHub, or update the existing app’s spec to use `.do/app.yaml` from this repo.
+3. The spec defines:
+   - **web** (static site): source `/`, serves the shell.
+   - **api** (functions): source `api/`, route `/api`; exposes `POST /api/chat/message`.
+4. Add environment variables to the **api** component (see **Gradient™ AI** above): `GRADIENT_AGENT_ENDPOINT`, `GRADIENT_AGENT_KEY`.
+5. Deploy. The live URL serves the static site at `/` and the chat API at `/api/chat/message`.

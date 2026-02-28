@@ -1,0 +1,13 @@
+# DigitalOcean Functions project for BetterOcean serverless API.
+# Deployed as a component of the App Platform app; env vars are set in the app spec.
+environment:
+  GRADIENT_AGENT_ENDPOINT: "${GRADIENT_AGENT_ENDPOINT}"
+  GRADIENT_AGENT_KEY: "${GRADIENT_AGENT_KEY}"
+
+packages:
+  - name: chat
+    functions:
+      - name: message
+        runtime: nodejs:22
+        web: true
+        main: message.mjs

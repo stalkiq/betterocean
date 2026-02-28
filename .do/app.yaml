@@ -1,8 +1,20 @@
-# DigitalOcean App Platform spec for BetterOcean (static site).
-# Replace YOUR_GITHUB_USERNAME/betterocean with your actual GitHub owner/repo (e.g. myname/betterocean).
-# If you create the app from the control panel and select this repo, the repo/branch may be set automatically.
+# BetterOcean: static web shell + serverless API (Gradient AI in background).
+# Set GRADIENT_AGENT_ENDPOINT and GRADIENT_AGENT_KEY on the "api" component in App Platform.
 name: betterocean
 region: nyc
+
+ingress:
+  rules:
+    - match:
+        path:
+          prefix: /api
+      component:
+        name: api
+    - match:
+        path:
+          prefix: /
+      component:
+        name: web
 
 static_sites:
   - name: web
@@ -13,3 +25,14 @@ static_sites:
       branch: main
       deploy_on_push: true
       repo: stalkiq/betterocean
+
+functions:
+  - name: api
+    source_dir: api
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: stalkiq/betterocean
+    routes:
+      - path: /api
+        preserve_path_prefix: true

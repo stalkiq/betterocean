@@ -10,8 +10,7 @@ const workspaceTableWrap = document.getElementById("workspaceTableWrap");
 
 const DO_API_BASE = "https://api.digitalocean.com";
 const TOKEN_KEY = "do_api_token";
-const GRADIENT_ENDPOINT_KEY = "gradient_agent_endpoint";
-const GRADIENT_KEY_KEY = "gradient_agent_key";
+const API_CHAT_URL = "/api/chat/message";
 
 const openTabs = new Set(["Assets"]);
 let currentTab = "Assets";
@@ -23,19 +22,6 @@ function getDoToken() {
 function setDoToken(token) {
   if (token) sessionStorage.setItem(TOKEN_KEY, token);
   else sessionStorage.removeItem(TOKEN_KEY);
-}
-
-function getGradientConfig() {
-  const endpoint = (sessionStorage.getItem(GRADIENT_ENDPOINT_KEY) || "").trim().replace(/\/+$/, "");
-  const key = sessionStorage.getItem(GRADIENT_KEY_KEY) || "";
-  return { endpoint, key };
-}
-
-function setGradientConfig(endpoint, key) {
-  if (endpoint) sessionStorage.setItem(GRADIENT_ENDPOINT_KEY, endpoint.trim().replace(/\/+$/, ""));
-  else sessionStorage.removeItem(GRADIENT_ENDPOINT_KEY);
-  if (key) sessionStorage.setItem(GRADIENT_KEY_KEY, key);
-  else sessionStorage.removeItem(GRADIENT_KEY_KEY);
 }
 
 async function doApi(path, token) {
@@ -86,25 +72,14 @@ function renderAssetsView() {
 
 function renderSettingsView() {
   const token = getDoToken();
-  const { endpoint: gradEndpoint, key: gradKey } = getGradientConfig();
   workspaceTableWrap.innerHTML = `
     <div class="settings-block">
       <h3 class="settings-title">DigitalOcean API</h3>
-      <p class="settings-desc">Add a read-only Personal Access Token to view account and droplets in the DigitalOcean tab. Token is stored in this browser session only.</p>
+      <p class="settings-desc">Optional: add a read-only Personal Access Token to view account and droplets in the DigitalOcean tab. Token is stored in this browser session only.</p>
       <label class="settings-label">API token</label>
       <input type="password" id="doTokenInput" class="settings-input" placeholder="${token ? "Token saved — paste a new token to replace" : "Paste your token"}" autocomplete="off" />
       <button type="button" id="doTokenSave" class="settings-save">Save token</button>
       ${token ? '<button type="button" id="doTokenClear" class="settings-clear">Clear token</button>' : ""}
-    </div>
-    <div class="settings-block settings-block-second">
-      <h3 class="settings-title">Gradient™ AI (chat)</h3>
-      <p class="settings-desc">Connect the right-hand chat to a DigitalOcean Gradient AI agent. Create an agent in <a href="https://cloud.digitalocean.com" target="_blank" rel="noopener">Agent Platform</a>, then add its endpoint URL and an endpoint access key here.</p>
-      <label class="settings-label">Agent endpoint URL</label>
-      <input type="url" id="gradientEndpointInput" class="settings-input" placeholder="https://xxxxx.agents.do-ai.run" value="${gradEndpoint || ""}" autocomplete="off" />
-      <label class="settings-label">Endpoint access key</label>
-      <input type="password" id="gradientKeyInput" class="settings-input" placeholder="${gradKey ? "Key saved — paste new to replace" : "Paste your agent access key"}" autocomplete="off" />
-      <button type="button" id="gradientSave" class="settings-save">Save</button>
-      ${gradEndpoint || gradKey ? '<button type="button" id="gradientClear" class="settings-clear">Clear</button>' : ""}
     </div>
   `;
   const input = document.getElementById("doTokenInput");
@@ -117,22 +92,6 @@ function renderSettingsView() {
   });
   const clearBtn = document.getElementById("doTokenClear");
   if (clearBtn) clearBtn.addEventListener("click", () => { setDoToken(""); renderSettingsView(); });
-
-  const epInput = document.getElementById("gradientEndpointInput");
-  const keyInput = document.getElementById("gradientKeyInput");
-  document.getElementById("gradientSave").addEventListener("click", () => {
-    const ep = epInput.value.trim().replace(/\/+$/, "");
-    const key = keyInput.value.trim();
-    if (ep) sessionStorage.setItem(GRADIENT_ENDPOINT_KEY, ep);
-    else sessionStorage.removeItem(GRADIENT_ENDPOINT_KEY);
-    if (key) sessionStorage.setItem(GRADIENT_KEY_KEY, key);
-    else sessionStorage.removeItem(GRADIENT_KEY_KEY);
-    keyInput.value = "";
-    keyInput.placeholder = getGradientConfig().key ? "Key saved — paste new to replace" : "Paste your agent access key";
-    renderSettingsView();
-  });
-  const gradClearBtn = document.getElementById("gradientClear");
-  if (gradClearBtn) gradClearBtn.addEventListener("click", () => { setGradientConfig("", ""); renderSettingsView(); });
 }
 
 function renderDoLoading() {
@@ -290,29 +249,19 @@ function appendChatMessage(role, content, className = "") {
 }
 
 async function sendToGradient(userContent) {
-  const { endpoint, key } = getGradientConfig();
-  if (!endpoint || !key) return null;
-  const url = `${endpoint}/api/v1/chat/completions`;
   const messages = [...chatHistory, { role: "user", content: userContent }];
-  const res = await fetch(url, {
+  const res = await fetch(API_CHAT_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      messages,
-      stream: false,
-    }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const errMsg = data.error?.message || data.message || `HTTP ${res.status}`;
+    const errMsg = data.error || `Request failed (${res.status})`;
     throw new Error(errMsg);
   }
-  const text = data.choices?.[0]?.message?.content;
-  if (text == null) throw new Error("No response content from agent");
-  return text;
+  if (data.error) throw new Error(data.error);
+  return data.reply != null ? String(data.reply) : "";
 }
 
 chatForm.addEventListener("submit", async (e) => {
@@ -339,13 +288,13 @@ chatForm.addEventListener("submit", async (e) => {
       appendChatMessage("assistant", reply);
     } else {
       chatHistory.pop();
-      appendChatMessage("assistant", "Configure Gradient AI in Settings (G) to use the assistant.", "msg-muted");
+      appendChatMessage("assistant", "No reply from the assistant. The API may not be configured yet.", "msg-muted");
     }
   } catch (err) {
     placeholder.remove();
     chatHistory.pop();
     const errText = err.message || String(err);
-    appendChatMessage("assistant", "Error: " + errText + " — Check Settings (G) for Gradient endpoint and key.", "msg-error");
+    appendChatMessage("assistant", errText, "msg-error");
   }
 });
 
