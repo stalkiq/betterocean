@@ -43,4 +43,4 @@ functions:
       - key: GRADIENT_AGENT_KEY
         scope: RUN_AND_BUILD_TIME
         type: SECRET
-        value: "${GRADIENT_AGENT_KEY}"
+        value: "sk-do-4AWFoeMqCUXGWDFGj7wv28690WpGCcWeZTM2_HR1vViLlYBo_BLyo8apjf"
