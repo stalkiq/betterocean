@@ -1,0 +1,275 @@
+:root {
+  --bg: #0a0f1c;
+  --panel: #0f1729;
+  --panel-2: #121b30;
+  --line: #22304a;
+  --text: #d5e3ff;
+  --muted: #90a3c8;
+  --accent: #59a7ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at top, #111d35, var(--bg));
+  color: var(--text);
+  font: 14px/1.4 Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+}
+
+.app-shell {
+  height: 100vh;
+  display: grid;
+  grid-template-columns: 56px 220px 1fr 290px;
+  gap: 8px;
+  padding: 8px;
+}
+
+.icon-rail,
+.left-panel,
+.center-panel,
+.chat-panel {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #0d1628, #0a1221);
+}
+
+.icon-rail {
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-dot {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: #1d2c4b;
+  border: 1px solid #3a4e78;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  margin-bottom: 2px;
+}
+
+.rail-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid #4d5e82;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.rail-btn.active,
+.rail-btn:hover {
+  border-color: #8fa6d3;
+  color: #e9f1ff;
+}
+
+.left-panel {
+  padding: 14px;
+}
+
+.logo {
+  margin: 0;
+  font-size: 16px;
+  text-transform: lowercase;
+}
+
+.panel-label {
+  margin: 10px 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.menu {
+  display: grid;
+  gap: 4px;
+}
+
+.menu-item {
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.menu-item.active,
+.menu-item:hover {
+  color: var(--text);
+  border-color: #314266;
+  background: #131f35;
+}
+
+.center-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.top-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.top-tab {
+  border: 1px solid #314266;
+  color: #a8b9da;
+  background: #101b2f;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.top-tab.active {
+  color: #fff;
+  border-color: #5474af;
+  background: #162640;
+}
+
+.workspace {
+  padding: 12px;
+  overflow: auto;
+}
+
+.workspace-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.workspace-head h2 {
+  margin: 0;
+  font-size: 30px;
+  line-height: 1.1;
+}
+
+.workspace-head p {
+  margin: 2px 0 0;
+  color: var(--muted);
+}
+
+.refresh-btn {
+  border: 1px solid #6b7280;
+  background: #0d1527;
+  color: #dbe4f7;
+  border-radius: 7px;
+  padding: 7px 12px;
+  box-shadow: 0 0 0 1px rgba(209, 213, 219, 0.2), 0 0 9px rgba(209, 213, 219, 0.15);
+  cursor: pointer;
+}
+
+.table-wrap {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  border-bottom: 1px solid #1d2a45;
+  padding: 10px;
+  text-align: left;
+  font-size: 12px;
+}
+
+th {
+  color: #93a7cc;
+  font-weight: 600;
+  background: #0e1629;
+}
+
+td {
+  color: #d4e0f6;
+}
+
+.up {
+  color: #79d7a0;
+}
+
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-panel header {
+  padding: 10px;
+  border-bottom: 1px solid var(--line);
+  font-weight: 600;
+}
+
+.chat-log {
+  padding: 10px;
+  overflow: auto;
+  flex: 1;
+  display: grid;
+  gap: 8px;
+}
+
+.msg {
+  border: 1px solid #243450;
+  background: #10192b;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #bdd0f4;
+}
+
+.msg.me {
+  border-color: #365486;
+  background: #13223a;
+}
+
+.chat-form {
+  border-top: 1px solid var(--line);
+  padding: 10px;
+  display: flex;
+  gap: 8px;
+}
+
+.chat-form input {
+  flex: 1;
+  border: 1px solid #2b3b5a;
+  background: #0e1728;
+  color: #dce8ff;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.chat-form button {
+  border: 1px solid #3f5f98;
+  background: #17305a;
+  color: #e9f1ff;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+@media (max-width: 1200px) {
+  .app-shell {
+    grid-template-columns: 56px 200px 1fr;
+  }
+
+  .chat-panel {
+    display: none;
+  }
+}

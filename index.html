@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BetterOcean</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="icon-rail">
+        <div class="brand-dot">B</div>
+        <button class="rail-btn active" data-open-tab="Assets">A</button>
+        <button class="rail-btn" data-open-tab="Leads">L</button>
+        <button class="rail-btn" data-open-tab="Signals">S</button>
+        <button class="rail-btn" data-open-tab="Reports">R</button>
+        <button class="rail-btn" data-open-tab="Settings">G</button>
+      </aside>
+
+      <aside class="left-panel">
+        <h1 class="logo">betterocean</h1>
+        <p class="panel-label">Mission Zones</p>
+        <nav class="menu">
+          <button class="menu-item active" data-view="Market Watch">Market Watch</button>
+          <button class="menu-item" data-view="Earnings Calendar">Earnings Calendar</button>
+          <button class="menu-item" data-view="Cross Asset Leads">Cross Asset Leads</button>
+          <button class="menu-item" data-view="Global Markets">Global Markets</button>
+          <button class="menu-item" data-view="Energy and Power">Energy and Power</button>
+          <button class="menu-item" data-view="Rates and Credit">Rates and Credit</button>
+        </nav>
+      </aside>
+
+      <main class="center-panel">
+        <div class="top-tabs" id="topTabs">
+          <button class="top-tab active" data-tab="Assets">Assets</button>
+        </div>
+
+        <section class="workspace">
+          <header class="workspace-head">
+            <div>
+              <h2 id="workspaceTitle">Assets</h2>
+              <p id="workspaceSub">Market Watch</p>
+            </div>
+            <button class="refresh-btn">Refresh</button>
+          </header>
+
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Asset</th>
+                  <th>Close</th>
+                  <th>Change</th>
+                  <th>Open</th>
+                  <th>High</th>
+                  <th>Low</th>
+                  <th>Volume</th>
+                </tr>
+              </thead>
+              <tbody id="rows">
+                <tr><td>S&P 500 ETF (SPY)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+                <tr><td>Apple (AAPL)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+                <tr><td>Microsoft (MSFT)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+                <tr><td>Crude Oil (CL.F)</td><td>67.02</td><td class="up">+2.56%</td><td>65.35</td><td>67.83</td><td>64.85</td><td>—</td></tr>
+                <tr><td>Natural Gas (NG.F)</td><td>2.859</td><td class="up">+0.95%</td><td>2.832</td><td>2.894</td><td>2.818</td><td>—</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+
+      <aside class="chat-panel">
+        <header>Assistant</header>
+        <div class="chat-log" id="chatLog">
+          <div class="msg">
+            Hi, BetterOcean analyst online. Ask about assets and signals.
+          </div>
+        </div>
+        <form id="chatForm" class="chat-form">
+          <input id="chatInput" placeholder="Ask BetterOcean..." />
+          <button type="submit">Send</button>
+        </form>
+      </aside>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
