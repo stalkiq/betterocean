@@ -1,0 +1,11 @@
+{
+  "name": "betterocean",
+  "version": "1.0.0",
+  "description": "BetterOcean UI Scaffold",
+  "scripts": {
+    "dev": "serve"
+  },
+  "devDependencies": {
+    "serve": "^14.2.4"
+  }
+}

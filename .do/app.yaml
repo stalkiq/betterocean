@@ -1,0 +1,15 @@
+# DigitalOcean App Platform spec for BetterOcean (static site).
+# Replace YOUR_GITHUB_USERNAME/betterocean with your actual GitHub owner/repo (e.g. myname/betterocean).
+# If you create the app from the control panel and select this repo, the repo/branch may be set automatically.
+name: betterocean
+region: nyc
+
+static_sites:
+  - name: web
+    environment_slug: html
+    source_dir: /
+    index_document: index.html
+    github:
+      branch: main
+      deploy_on_push: true
+      repo: YOUR_GITHUB_USERNAME/betterocean

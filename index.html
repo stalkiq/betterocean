@@ -14,6 +14,7 @@
         <button class="rail-btn" data-open-tab="Leads">L</button>
         <button class="rail-btn" data-open-tab="Signals">S</button>
         <button class="rail-btn" data-open-tab="Reports">R</button>
+        <button class="rail-btn" data-open-tab="DigitalOcean" title="DigitalOcean">DO</button>
         <button class="rail-btn" data-open-tab="Settings">G</button>
       </aside>
 
@@ -44,7 +45,7 @@
             <button class="refresh-btn">Refresh</button>
           </header>
 
-          <div class="table-wrap">
+          <div class="table-wrap" id="workspaceTableWrap">
             <table>
               <thead>
                 <tr>
@@ -70,14 +71,17 @@
       </main>
 
       <aside class="chat-panel">
-        <header>Assistant</header>
+        <header class="chat-panel-header">
+          <span>Gradient™ AI</span>
+          <span class="chat-panel-badge">DigitalOcean</span>
+        </header>
         <div class="chat-log" id="chatLog">
           <div class="msg">
-            Hi, BetterOcean analyst online. Ask about assets and signals.
+            I'm powered by DigitalOcean Gradient™ AI. Add your agent endpoint and key in Settings (G) to connect, then ask me anything.
           </div>
         </div>
         <form id="chatForm" class="chat-form">
-          <input id="chatInput" placeholder="Ask BetterOcean..." />
+          <input id="chatInput" placeholder="Ask Gradient AI..." />
           <button type="submit">Send</button>
         </form>
       </aside>
