@@ -34,7 +34,7 @@ functions:
       deploy_on_push: true
       repo: stalkiq/betterocean
     routes:
-      - path: /api
+      - path: /
     envs:
       - key: GRADIENT_AGENT_ENDPOINT
         scope: RUN_AND_BUILD_TIME
