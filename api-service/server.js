@@ -240,6 +240,41 @@ function parseStooqCsv(csvText) {
   });
 }
 
+async function fetchStooqQuote(symbol, label) {
+  const url = `https://stooq.com/q/l/?s=${encodeURIComponent(symbol)}&f=sd2t2ohlcv&h&e=csv`;
+  const upstream = await getText(url);
+  if (upstream.status < 200 || upstream.status >= 300) {
+    throw new Error(`Quote fetch failed for ${symbol} (${upstream.status})`);
+  }
+
+  const lines = String(upstream.data || "")
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean);
+  if (lines.length < 2) return null;
+  const cols = lines[1].split(",");
+  if (cols.length < 8) return null;
+
+  const open = Number(cols[3] || 0);
+  const high = Number(cols[4] || 0);
+  const low = Number(cols[5] || 0);
+  const close = Number(cols[6] || 0);
+  const volume = Number(cols[7] || 0);
+
+  if (!Number.isFinite(close) || close <= 0) return null;
+
+  return {
+    symbol: String(cols[0] || symbol).toUpperCase(),
+    label,
+    open,
+    high,
+    low,
+    close,
+    volume,
+    date: cols[1] || null,
+  };
+}
+
 function readMessages(req) {
   if (Array.isArray(req.body?.messages)) return req.body.messages;
   return null;
@@ -325,15 +360,22 @@ app.get("/healthz", (_req, res) => {
 });
 
 app.get(["/market/overview", "/api/market/overview"], async (_req, res) => {
-  const stooqUrl =
-    "https://stooq.com/q/l/?s=spy.us,qqq.us,iwm.us,dia.us,gld.us,tlt.us&f=sd2t2ohlcv&h&e=csv";
+  const symbols = [
+    { symbol: "spy.us", label: "S&P 500 ETF (SPY)" },
+    { symbol: "qqq.us", label: "Nasdaq 100 ETF (QQQ)" },
+    { symbol: "iwm.us", label: "Russell 2000 ETF (IWM)" },
+    { symbol: "dia.us", label: "Dow ETF (DIA)" },
+    { symbol: "gld.us", label: "Gold ETF (GLD)" },
+    { symbol: "tlt.us", label: "20Y Treasury ETF (TLT)" },
+  ];
   try {
-    const upstream = await getText(stooqUrl);
-    if (upstream.status < 200 || upstream.status >= 300) {
-      sendJson(res, 502, { error: `Market data provider returned ${upstream.status}` });
-      return;
-    }
-    const assets = parseStooqCsv(upstream.data).filter((a) => Number.isFinite(a.close) && a.close > 0);
+    const assets = (
+      await Promise.all(
+        symbols.map(({ symbol, label }) =>
+          fetchStooqQuote(symbol, label).catch(() => null)
+        )
+      )
+    ).filter(Boolean);
     sendJson(res, 200, {
       source: "stooq",
       updatedAt: new Date().toISOString(),
