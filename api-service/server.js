@@ -404,29 +404,50 @@ async function loadSp500TickerUniverse(limit = 500) {
     return tickerUniverseCache.symbols.slice(0, limit);
   }
 
-  const url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies";
-  const upstream = await getText(url);
-  if (upstream.status < 200 || upstream.status >= 300) {
-    throw new Error(`Ticker universe source failed (${upstream.status})`);
+  let unique = [];
+
+  // Primary source: maintained CSV list of S&P 500 symbols.
+  const csvUrl = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv";
+  const csvUpstream = await getText(csvUrl).catch(() => null);
+  if (csvUpstream && csvUpstream.status >= 200 && csvUpstream.status < 300) {
+    const lines = String(csvUpstream.data || "")
+      .split(/\r?\n/)
+      .slice(1)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const symbols = lines
+      .map((line) => line.split(",")[0] || "")
+      .map((raw) => normalizeTickerSymbol(raw).replace(/-/g, "."))
+      .filter(Boolean);
+    unique = [...new Set(symbols)].slice(0, limit);
   }
-  const html = String(upstream.data || "");
-  const tableMatch =
-    html.match(/<table[^>]*id="constituents"[^>]*>[\s\S]*?<\/table>/i) ||
-    html.match(/<table[^>]*class="[^"]*wikitable[^"]*"[^>]*>[\s\S]*?<\/table>/i);
-  if (!tableMatch) throw new Error("Ticker universe table not found.");
 
-  const rows = tableMatch[0].match(/<tr[\s\S]*?<\/tr>/gi) || [];
-  const symbols = [];
-  rows.slice(1).forEach((row) => {
-    const firstCell = row.match(/<td[^>]*>([\s\S]*?)<\/td>/i);
-    if (!firstCell) return;
-    const raw = stripHtml(firstCell[1]).split(/\s+/)[0];
-    const symbol = normalizeTickerSymbol(raw).replace(/-/g, ".");
-    if (!symbol) return;
-    symbols.push(symbol);
-  });
+  // Secondary fallback: scrape Wikipedia table if CSV is unavailable.
+  if (unique.length < 100) {
+    const wikiUrl = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies";
+    const upstream = await getText(wikiUrl);
+    if (upstream.status < 200 || upstream.status >= 300) {
+      throw new Error(`Ticker universe source failed (${upstream.status})`);
+    }
+    const html = String(upstream.data || "");
+    const tableMatch =
+      html.match(/<table[^>]*id="constituents"[^>]*>[\s\S]*?<\/table>/i) ||
+      html.match(/<table[^>]*class="[^"]*wikitable[^"]*"[^>]*>[\s\S]*?<\/table>/i);
+    if (!tableMatch) throw new Error("Ticker universe table not found.");
 
-  const unique = [...new Set(symbols)].slice(0, limit);
+    const rows = tableMatch[0].match(/<tr[\s\S]*?<\/tr>/gi) || [];
+    const symbols = [];
+    rows.slice(1).forEach((row) => {
+      const firstCell = row.match(/<td[^>]*>([\s\S]*?)<\/td>/i);
+      if (!firstCell) return;
+      const raw = stripHtml(firstCell[1]).split(/\s+/)[0];
+      const symbol = normalizeTickerSymbol(raw).replace(/-/g, ".");
+      if (!symbol) return;
+      symbols.push(symbol);
+    });
+    unique = [...new Set(symbols)].slice(0, limit);
+  }
+
   if (unique.length < 100) {
     throw new Error("Ticker universe source returned too few symbols.");
   }
