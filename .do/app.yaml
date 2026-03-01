@@ -1,5 +1,5 @@
-# BetterOcean: static web shell + serverless API (Gradient AI in background).
-# Set GRADIENT_AGENT_ENDPOINT and GRADIENT_AGENT_KEY on the "api" component in App Platform.
+# BetterOcean: static web shell + API service (Gradient AI in background).
+# Set GRADIENT_AGENT_ENDPOINT and GRADIENT_AGENT_KEY on the "api" service in App Platform.
 name: betterocean
 region: nyc
 
@@ -26,15 +26,17 @@ static_sites:
       deploy_on_push: true
       repo: stalkiq/betterocean
 
-functions:
+services:
   - name: api
-    source_dir: api
+    source_dir: api-service
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    run_command: npm start
     github:
       branch: main
       deploy_on_push: true
       repo: stalkiq/betterocean
-    routes:
-      - path: /
     envs:
       - key: GRADIENT_AGENT_ENDPOINT
         scope: RUN_AND_BUILD_TIME

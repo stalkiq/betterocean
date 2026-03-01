@@ -12,7 +12,7 @@ const chatPanelBadge = document.getElementById("chatPanelBadge");
 
 const DO_API_BASE = "https://api.digitalocean.com";
 const TOKEN_KEY = "do_api_token";
-const API_CHAT_URL = "/api/chat/message.json";
+const API_CHAT_URL = "/api/chat/message";
 
 const AGENTS = [
   {

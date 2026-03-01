@@ -1,9 +1,9 @@
 # BetterOcean
 
-Static web app shell with serverless APIs for an **investing platform** powered by [DigitalOcean Gradient™ AI](https://docs.digitalocean.com/products/gradient-ai-platform). Charles Schwab API integration can be added later.
+Static web app shell with backend APIs for an **investing platform** powered by [DigitalOcean Gradient™ AI](https://docs.digitalocean.com/products/gradient-ai-platform). Charles Schwab API integration can be added later.
 
 - **Frontend:** Static HTML/CSS/JS (three-pane UI: rail, workspace, Gradient™ AI chat).
-- **Backend:** Serverless function `POST /api/chat/message` proxies chat to Gradient AI; credentials stay on the server so all users get the same assistant without configuring anything in the app.
+- **Backend:** App Platform service `POST /api/chat/message` proxies chat to Gradient AI; credentials stay on the server so all users get the same assistant without configuring anything in the app.
 
 ## Run locally
 
@@ -36,7 +36,7 @@ The app calls `https://api.digitalocean.com` for `GET /v2/account` and `GET /v2/
 
 ## Gradient™ AI (chat, in the background)
 
-The right-hand chat is powered by Gradient AI via a **serverless API**. Users do not configure anything; you set Gradient once in App Platform.
+The right-hand chat is powered by Gradient AI via a **backend API service**. Users do not configure anything; you set Gradient once in App Platform.
 
 1. **Create an agent**  
    In the [DigitalOcean Control Panel](https://cloud.digitalocean.com), go to **Agent Platform** → create or open a workspace → **Create Agent**. Name it, set instructions (e.g. for investing/markets), choose a model, and create the agent.
@@ -45,17 +45,17 @@ The right-hand chat is powered by Gradient AI via a **serverless API**. Users do
    On the agent’s **Overview** tab, copy the **Endpoint** URL (e.g. `https://xxxxx.agents.do-ai.run`). In the agent’s **Settings** tab, under **Endpoint Access Keys**, click **Create Key**, name it, then copy the secret key (shown only once).
 
 3. **Configure in App Platform**  
-   In your app’s dashboard, open the **api** (Functions) component → **Settings** → **Environment Variables**. Add:
+   In your app’s dashboard, open the **api** (Service) component → **Settings** → **Environment Variables**. Add:
    - `GRADIENT_AGENT_ENDPOINT` = the agent endpoint URL  
    - `GRADIENT_AGENT_KEY` = the endpoint access key (mark as **Encrypt** / secret)  
    Save and redeploy if needed.
 
 4. **Chat**  
-   Users type in the chat; the frontend sends `POST /api/chat/message` with the conversation history. The serverless function calls Gradient with the env credentials and returns the reply. No keys or config are exposed to the browser.
+   Users type in the chat; the frontend sends `POST /api/chat/message` with the conversation history. The backend service calls Gradient with the env credentials and returns the reply. No keys or config are exposed to the browser.
 
 ## Host on DigitalOcean (App Platform)
 
-The app has two components: a **static site** (web shell) and a **Functions** component (serverless API for chat). Deploy from the same repo.
+The app has two components: a **static site** (web shell) and a **Service** component (backend API for chat). Deploy from the same repo.
 
 ### 1. Push the repo to GitHub
 
@@ -67,6 +67,6 @@ Push this project to a GitHub repo (e.g. `stalkiq/betterocean`).
 2. Create a new app from GitHub, or update the existing app’s spec to use `.do/app.yaml` from this repo.
 3. The spec defines:
    - **web** (static site): source `/`, serves the shell.
-   - **api** (functions): source `api/`, route `/api`; exposes `POST /api/chat/message`.
+   - **api** (service): source `api-service/`, route `/api`; exposes `POST /api/chat/message`.
 4. Add environment variables to the **api** component (see **Gradient™ AI** above): `GRADIENT_AGENT_ENDPOINT`, `GRADIENT_AGENT_KEY`.
 5. Deploy. The live URL serves the static site at `/` and the chat API at `/api/chat/message`.
