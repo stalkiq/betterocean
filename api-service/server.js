@@ -438,6 +438,116 @@ async function handleChat(req, res) {
 app.post("/chat/message", handleChat);
 app.post("/api/chat/message", handleChat);
 
+async function buildOpeningPlaybook() {
+  const symbols = [
+    { symbol: "spy.us", label: "S&P 500 ETF (SPY)" },
+    { symbol: "qqq.us", label: "Nasdaq 100 ETF (QQQ)" },
+    { symbol: "iwm.us", label: "Russell 2000 ETF (IWM)" },
+    { symbol: "dia.us", label: "Dow ETF (DIA)" },
+    { symbol: "gld.us", label: "Gold ETF (GLD)" },
+    { symbol: "tlt.us", label: "20Y Treasury ETF (TLT)" },
+  ];
+
+  const marketSnapshot = (
+    await Promise.all(
+      symbols.map(({ symbol, label }) => fetchStooqQuote(symbol, label).catch(() => null))
+    )
+  ).filter(Boolean);
+
+  const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
+  const key = process.env.GRADIENT_AGENT_KEY;
+  if (!endpoint || !key) {
+    return {
+      asOf: new Date().toISOString(),
+      source: "fallback",
+      buckets: [
+        {
+          name: "Large Cap Momentum",
+          thesis: "Use high-liquidity ETFs as opening bell anchors.",
+          tickers: ["SPY", "QQQ", "DIA"],
+        },
+        {
+          name: "Risk Rotation",
+          thesis: "Small caps and duration can signal risk-on/risk-off at open.",
+          tickers: ["IWM", "TLT", "GLD"],
+        },
+      ],
+      marketSnapshot,
+    };
+  }
+
+  const base = endpoint.replace(/\/+$/, "");
+  const completionsUrl = base.includes("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+
+  const prompt = `
+You are an opening bell trading assistant.
+Given this market snapshot JSON:
+${JSON.stringify(marketSnapshot)}
+
+Return STRICT JSON only with this shape:
+{
+  "buckets": [
+    { "name": "string", "thesis": "string", "tickers": ["AAPL","MSFT","..."] }
+  ],
+  "notes": "string"
+}
+
+Rules:
+- 3 to 4 buckets total
+- Each bucket must have 3-6 tickers
+- Focus on liquid U.S. tickers most relevant for opening session ideas
+- Keep thesis concise and practical
+`;
+
+  const upstream = await postJson(
+    completionsUrl,
+    {
+      model: process.env.GRADIENT_MODEL || "openai-gpt-oss-120b",
+      stream: false,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a market strategist. Return clean JSON only, no markdown.",
+        },
+        { role: "user", content: prompt },
+      ],
+    },
+    {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+    }
+  );
+
+  if (upstream.status < 200 || upstream.status >= 300) {
+    throw new Error(`Gradient returned ${upstream.status}`);
+  }
+
+  const content = String(upstream.data?.choices?.[0]?.message?.content || "").trim();
+  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error("Gradient response did not include valid JSON.");
+  }
+  const parsed = JSON.parse(jsonMatch[0]);
+  const buckets = Array.isArray(parsed?.buckets) ? parsed.buckets : [];
+  return {
+    asOf: new Date().toISOString(),
+    source: "gradient",
+    buckets,
+    notes: parsed?.notes || "",
+    marketSnapshot,
+  };
+}
+
+app.get(["/market/opening-playbook", "/api/market/opening-playbook"], async (_req, res) => {
+  try {
+    const playbook = await buildOpeningPlaybook();
+    sendJson(res, 200, playbook);
+  } catch (err) {
+    sendJson(res, 502, { error: err.message || "Failed to build opening playbook." });
+  }
+});
+
 app.get("/schwab/login", (req, res) => {
   try {
     assertCredentials();

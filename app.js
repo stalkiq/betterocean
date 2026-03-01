@@ -15,6 +15,7 @@ const TOKEN_KEY = "do_api_token";
 const API_CHAT_URL = "/api/chat/message";
 const SCHWAB_CONNECT_TAB = "Schwab Connect";
 const INVESTMENTS_TAB = "Investments";
+const TIME_TAB = "Time";
 const HOME_TAB = SCHWAB_CONNECT_TAB;
 const RESPONSE_STYLE_PROMPT =
   "Reply in 3-6 concise bullet points with short, scannable lines. Keep spacing clean and avoid long paragraphs.";
@@ -82,7 +83,7 @@ const AGENTS = [
 const AGENT_BY_ID = Object.fromEntries(AGENTS.map((agent) => [agent.id, agent]));
 const AGENT_BY_TAB = Object.fromEntries(AGENTS.map((agent) => [agent.tab, agent]));
 
-const openTabs = new Set([HOME_TAB, INVESTMENTS_TAB]);
+const openTabs = new Set([HOME_TAB, INVESTMENTS_TAB, TIME_TAB]);
 let currentTab = HOME_TAB;
 let currentAgentId = AGENTS[0].id;
 const announcedAgents = new Set();
@@ -91,6 +92,8 @@ let chatHistory = [];
 let schwabSession = { connected: false };
 let schwabData = { accounts: null, openOrders: null };
 let investmentsMarket = { assets: [], updatedAt: null };
+let openingPlaybook = { buckets: [], asOf: null };
+let marketCountdownTimer = null;
 
 function getDoToken() {
   return sessionStorage.getItem(TOKEN_KEY) || "";
@@ -156,6 +159,97 @@ async function loadInvestmentsMarketData() {
     updatedAt: data.updatedAt || null,
   };
   return investmentsMarket;
+}
+
+async function loadOpeningPlaybook() {
+  const data = await schwabApi("/api/market/opening-playbook", { method: "GET" });
+  openingPlaybook = {
+    buckets: Array.isArray(data.buckets) ? data.buckets : [],
+    asOf: data.asOf || null,
+    notes: data.notes || "",
+    source: data.source || "unknown",
+  };
+  return openingPlaybook;
+}
+
+function getEtNowParts() {
+  const now = new Date();
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour12: false,
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(now).map((p) => [p.type, p.value]));
+  return {
+    weekday: parts.weekday,
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour),
+    minute: Number(parts.minute),
+    second: Number(parts.second),
+  };
+}
+
+function computeNextMarketOpenCountdown() {
+  const nowEt = getEtNowParts();
+  const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const nowDow = weekdayMap[nowEt.weekday] ?? 0;
+  const nowSynthetic = Date.UTC(
+    nowEt.year,
+    nowEt.month - 1,
+    nowEt.day,
+    nowEt.hour,
+    nowEt.minute,
+    nowEt.second
+  );
+
+  let addDays = 0;
+  const nowMinutes = nowEt.hour * 60 + nowEt.minute;
+  const openMinutes = 9 * 60 + 30;
+
+  if (nowDow === 0) addDays = 1;
+  else if (nowDow === 6) addDays = 2;
+  else if (nowMinutes >= openMinutes) addDays = nowDow === 5 ? 3 : 1;
+
+  const targetBase = new Date(Date.UTC(nowEt.year, nowEt.month - 1, nowEt.day + addDays, 9, 30, 0));
+  const targetSynthetic = targetBase.getTime();
+  const diffMs = Math.max(0, targetSynthetic - nowSynthetic);
+
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return { days, hours, minutes, seconds, diffMs };
+}
+
+function stopMarketCountdown() {
+  if (marketCountdownTimer) {
+    clearInterval(marketCountdownTimer);
+    marketCountdownTimer = null;
+  }
+}
+
+function startMarketCountdown() {
+  stopMarketCountdown();
+  const el = document.getElementById("marketOpenCountdown");
+  if (!el) return;
+  const update = () => {
+    const countdown = computeNextMarketOpenCountdown();
+    const pad = (n) => String(n).padStart(2, "0");
+    const days = countdown.days > 0 ? `${countdown.days}d ` : "";
+    el.textContent = `${days}${pad(countdown.hours)}:${pad(countdown.minutes)}:${pad(countdown.seconds)}`;
+  };
+  update();
+  marketCountdownTimer = setInterval(update, 1000);
 }
 
 function getLinkedAccounts() {
@@ -345,7 +439,8 @@ function renderTabs(activeTab = HOME_TAB) {
 }
 
 function closeTab(tabName) {
-  if (tabName === HOME_TAB || tabName === INVESTMENTS_TAB || !openTabs.has(tabName)) return;
+  if (tabName === HOME_TAB || tabName === INVESTMENTS_TAB || tabName === TIME_TAB || !openTabs.has(tabName))
+    return;
   const tabs = [...openTabs];
   const currentIndex = tabs.indexOf(tabName);
   openTabs.delete(tabName);
@@ -830,7 +925,8 @@ function activateTab(tabName) {
     !schwabSession.connected &&
     tabName !== SCHWAB_CONNECT_TAB &&
     tabName !== "Settings" &&
-    tabName !== INVESTMENTS_TAB
+    tabName !== INVESTMENTS_TAB &&
+    tabName !== TIME_TAB
   ) {
     openTabs.add(SCHWAB_CONNECT_TAB);
     currentTab = SCHWAB_CONNECT_TAB;
@@ -851,6 +947,8 @@ function activateTab(tabName) {
       ? "Schwab OAuth required"
       : tabName === INVESTMENTS_TAB
         ? "Public market dashboard"
+        : tabName === TIME_TAB
+          ? "Market open countdown + AI playbook"
       : tabName === "DigitalOcean"
         ? "Account & Droplets"
         : tabName === "Settings"
@@ -858,6 +956,8 @@ function activateTab(tabName) {
           : "Blank workspace";
 
   renderTabs(tabName);
+
+  stopMarketCountdown();
 
   if (tabName === SCHWAB_CONNECT_TAB) {
     renderSchwabConnectView();
@@ -870,6 +970,64 @@ function activateTab(tabName) {
       .catch((error) => {
         workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
           error.message || "Failed to load market data."
+        }</p></div>`;
+      });
+    return;
+  }
+  if (tabName === TIME_TAB) {
+    workspaceTableWrap.innerHTML = '<div class="do-loading">Building opening bell playbook...</div>';
+    loadOpeningPlaybook()
+      .then(() => {
+        const bucketHtml = openingPlaybook.buckets
+          .map((bucket) => {
+            const tickers = Array.isArray(bucket.tickers) ? bucket.tickers.join(", ") : "";
+            return `
+              <article class="schwab-card">
+                <h4>${bucket.name || "Bucket"}</h4>
+                <p class="schwab-card-sub">${bucket.thesis || "No thesis provided."}</p>
+                <div class="trade-status success">Tickers: ${tickers || "-"}</div>
+              </article>
+            `;
+          })
+          .join("");
+
+        workspaceTableWrap.innerHTML = `
+          <div class="agent-view">
+            <section class="agent-hero">
+              <h3>Market Open Timer</h3>
+              <p>Countdown to next U.S. market open (ET) with Gradient AI opening-bell stock buckets.</p>
+            </section>
+            <section class="schwab-metrics">
+              <article class="schwab-metric-card">
+                <h4>Next market open in</h4>
+                <div class="schwab-metric-value" id="marketOpenCountdown">--:--:--</div>
+              </article>
+              <article class="schwab-metric-card">
+                <h4>AI Source</h4>
+                <div class="schwab-metric-value small">${openingPlaybook.source || "unknown"}</div>
+              </article>
+              <article class="schwab-metric-card">
+                <h4>Playbook Updated</h4>
+                <div class="schwab-metric-value small">${
+                  openingPlaybook.asOf ? new Date(openingPlaybook.asOf).toLocaleString() : "-"
+                }</div>
+              </article>
+            </section>
+            <section class="schwab-grid">
+              ${bucketHtml || '<article class="schwab-card"><h4>No buckets</h4><p class="schwab-card-sub">Try Refresh to regenerate opening ideas.</p></article>'}
+            </section>
+            ${
+              openingPlaybook.notes
+                ? `<section class="schwab-card"><h4>AI Notes</h4><p class="schwab-card-sub">${openingPlaybook.notes}</p></section>`
+                : ""
+            }
+          </div>
+        `;
+        startMarketCountdown();
+      })
+      .catch((error) => {
+        workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
+          error.message || "Failed to load opening playbook."
         }</p></div>`;
       });
     return;
@@ -937,6 +1095,10 @@ document.querySelector(".refresh-btn").addEventListener("click", () => {
           error.message || "Failed to load market data."
         }</p></div>`;
       });
+    return;
+  }
+  if (currentTab === TIME_TAB) {
+    activateTab(TIME_TAB);
     return;
   }
   if (currentTab === "DigitalOcean") {
@@ -1056,7 +1218,7 @@ async function sendToGradient(userContent) {
 
 chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!schwabSession.connected && currentTab !== INVESTMENTS_TAB) {
+  if (!schwabSession.connected && currentTab !== INVESTMENTS_TAB && currentTab !== TIME_TAB) {
     appendChatMessage(
       "assistant",
       "Please connect your Charles Schwab account first for account-specific analysis. You can still use the Investments tab without login.",
@@ -1114,6 +1276,7 @@ async function initApp() {
 
   renderTabs(HOME_TAB);
   openTabs.add(INVESTMENTS_TAB);
+  openTabs.add(TIME_TAB);
   if (schwabSession.connected) {
     activateTab(HOME_TAB);
   } else {
