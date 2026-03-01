@@ -20,112 +20,61 @@ const RESPONSE_STYLE_PROMPT =
 
 const AGENTS = [
   {
-    id: "market-pulse",
-    tab: "Market Pulse Agent",
-    subtitle: "Cross-asset market pulse and macro headlines",
-    description: "Tracks broad market regime shifts, policy moves, and risk sentiment across equities, rates, FX, and commodities.",
+    id: "portfolio-copilot",
+    tab: "Portfolio Copilot",
+    subtitle: "Allocation, concentration, and rebalance ideas",
+    description:
+      "Uses live Schwab account structure to summarize portfolio shape, identify concentration, and suggest practical next actions.",
     insights: [
-      "US large-cap breadth is uneven; leadership concentration remains elevated.",
-      "Rates volatility stays sensitive to inflation and labor surprises.",
-      "Cross-asset correlation tends to rise during policy repricing windows.",
+      "Highlights top positions by weight and unrealized impact.",
+      "Flags portfolio concentration where one name drives risk.",
+      "Suggests small, staged rebalance moves instead of all-at-once shifts.",
     ],
     prompts: [
-      "Give me today's market pulse in 5 bullet points.",
-      "What macro headline risk is most likely to move indices this week?",
-      "Summarize risk-on vs risk-off signals right now.",
+      "Give me a rebalance plan using my current Schwab holdings.",
+      "What are my top concentration risks right now?",
+      "What are the first 3 practical portfolio actions for this week?",
     ],
     systemPrompt:
-      "You are Market Pulse Agent. Provide concise, actionable market commentary focused on macro regime, cross-asset flow, and headline risk for investors.",
+      "You are Portfolio Copilot. Use portfolio context to give concise allocation and rebalance guidance with clear, low-friction actions.",
   },
   {
-    id: "equity-intel",
-    tab: "Equity Intel Agent",
-    subtitle: "Stocks, sectors, earnings, and equity positioning",
-    description: "Focuses on stock-specific catalysts, sector rotation, earnings revisions, and valuation context.",
+    id: "risk-radar",
+    tab: "Risk Radar",
+    subtitle: "Scenario risk, downside triggers, and hedge ideas",
+    description:
+      "Acts like an on-demand risk desk: concentration checks, downside scenarios, and hedge-aware risk controls for active portfolios.",
     insights: [
-      "Mega-cap earnings quality still drives index-level momentum.",
-      "Estimate revisions and guidance language are key near-term equity drivers.",
-      "Sector leadership can rotate quickly when real yields reprice.",
+      "Translates position-level exposure into scenario-level risk language.",
+      "Prioritizes downside before upside to preserve capital.",
+      "Emphasizes position sizing, cash buffers, and stop discipline.",
     ],
     prompts: [
-      "Which sectors look strongest this week and why?",
-      "What are the top earnings watch names for this month?",
-      "Compare growth vs value risk in this tape.",
+      "Run a 30-day downside stress check on my current portfolio.",
+      "Where am I most exposed if market volatility spikes?",
+      "What hedge options should I consider right now?",
     ],
     systemPrompt:
-      "You are Equity Intel Agent. Deliver institutional-style equity insights: catalysts, sector trends, earnings context, and risk scenarios.",
+      "You are Risk Radar. Prioritize downside protection, scenario analysis, and disciplined risk actions using current portfolio context.",
   },
   {
-    id: "macro-rates",
-    tab: "Macro & Rates Agent",
-    subtitle: "Policy path, inflation prints, and yield curve signals",
-    description: "Interprets economic releases and central bank communication into rates and positioning implications.",
+    id: "order-flow-execution",
+    tab: "Order Flow & Execution",
+    subtitle: "Open orders, stale order cleanup, and execution tactics",
+    description:
+      "Monitors open orders and execution quality, helping users place, adjust, and cancel orders with cleaner workflow discipline.",
     insights: [
-      "Front-end rates react fastest to policy communication shifts.",
-      "Curve steepening vs flattening regimes matter for sector performance.",
-      "Inflation surprise direction strongly influences duration demand.",
+      "Surfaces stale open orders that likely need review.",
+      "Encourages incremental entries/exits over emotional all-in orders.",
+      "Turns order state data into concrete next execution steps.",
     ],
     prompts: [
-      "How does the latest inflation trend affect rates and equities?",
-      "What is the current yield curve signal telling us?",
-      "Give me a base case and bear case for policy path this quarter.",
+      "Review my open orders and tell me what to cancel or adjust.",
+      "What execution plan should I use for a volatile day?",
+      "How should I stage entries for a 3-leg buy plan?",
     ],
     systemPrompt:
-      "You are Macro & Rates Agent. Explain rate-market implications of macro data with clear base/bull/bear scenarios.",
-  },
-  {
-    id: "bond-credit",
-    tab: "Bond & Credit Agent",
-    subtitle: "Treasuries, IG/HY spreads, funding, and credit stress",
-    description: "Monitors bond markets, credit spread behavior, and refinancing risk across quality tiers.",
-    insights: [
-      "Spread compression can reverse quickly when growth concerns rise.",
-      "Refinancing windows and coupon burden matter for lower-quality issuers.",
-      "Credit stress often appears in liquidity metrics before price gaps.",
-    ],
-    prompts: [
-      "What are current credit spread risks in IG vs HY?",
-      "Where do you see default risk pockets forming?",
-      "How should I interpret today's move in Treasury yields for bonds?",
-    ],
-    systemPrompt:
-      "You are Bond & Credit Agent. Provide fixed-income and credit risk insight with practical investor implications.",
-  },
-  {
-    id: "commodity-energy",
-    tab: "Commodity & Energy Agent",
-    subtitle: "Oil, gas, metals, and supply-demand narrative shifts",
-    description: "Tracks commodity price drivers including geopolitics, inventory trends, and demand signals.",
-    insights: [
-      "Energy curves reflect both geopolitics and demand expectations.",
-      "Inventory and shipping constraints can trigger short volatility bursts.",
-      "Commodity inflation can feed back into rates and equity factor pricing.",
-    ],
-    prompts: [
-      "What is driving crude oil right now?",
-      "How do energy moves impact inflation-sensitive sectors?",
-      "Give me a 2-week outlook for major commodities.",
-    ],
-    systemPrompt:
-      "You are Commodity & Energy Agent. Focus on commodity fundamentals, macro linkages, and forward-looking scenario analysis.",
-  },
-  {
-    id: "risk-sentinel",
-    tab: "Risk Sentinel Agent",
-    subtitle: "Portfolio risk checks, stress scenarios, and hedging ideas",
-    description: "Acts as a risk officer, highlighting concentration risk, volatility triggers, and downside scenarios.",
-    insights: [
-      "Position concentration increases drawdown risk during factor rotations.",
-      "Volatility clustering often follows headline-driven regime breaks.",
-      "Hedge timing and sizing matter as much as instrument choice.",
-    ],
-    prompts: [
-      "Run a quick risk check for a growth-heavy portfolio.",
-      "What are top downside scenarios over the next 30 days?",
-      "Suggest practical hedging approaches for index and rates risk.",
-    ],
-    systemPrompt:
-      "You are Risk Sentinel Agent. Prioritize risk management, scenario planning, and practical hedging guidance.",
+      "You are Order Flow & Execution. Focus on practical order management, reducing execution mistakes, and improving trade workflow quality.",
   },
 ];
 
@@ -196,6 +145,102 @@ async function loadSchwabContextData() {
   } catch {
     schwabData = { accounts: null, openOrders: null };
   }
+}
+
+function getLinkedAccounts() {
+  return Array.isArray(schwabData.accounts) ? schwabData.accounts : [];
+}
+
+function getAllPositions() {
+  const positions = [];
+  getLinkedAccounts().forEach((account) => {
+    const list = account?.securitiesAccount?.positions;
+    if (Array.isArray(list)) {
+      list.forEach((position) => positions.push(position));
+    }
+  });
+  return positions;
+}
+
+function getPortfolioSnapshot() {
+  const accounts = getLinkedAccounts();
+  const positions = getAllPositions();
+
+  const totalLiquidationValue = accounts.reduce((sum, account) => {
+    const value = Number(account?.securitiesAccount?.currentBalances?.liquidationValue || 0);
+    return sum + (Number.isFinite(value) ? value : 0);
+  }, 0);
+
+  const totalCash = accounts.reduce((sum, account) => {
+    const value = Number(account?.securitiesAccount?.currentBalances?.cashBalance || 0);
+    return sum + (Number.isFinite(value) ? value : 0);
+  }, 0);
+
+  const mapped = positions
+    .map((position) => ({
+      symbol: position?.instrument?.symbol || "N/A",
+      marketValue: Number(position?.marketValue || 0),
+      longQuantity: Number(position?.longQuantity || 0),
+      shortQuantity: Number(position?.shortQuantity || 0),
+    }))
+    .sort((a, b) => b.marketValue - a.marketValue);
+
+  const top3 = mapped.slice(0, 3);
+  const topWeight =
+    totalLiquidationValue > 0 && top3[0]
+      ? Math.round((top3[0].marketValue / totalLiquidationValue) * 100)
+      : 0;
+
+  return {
+    accountCount: accounts.length,
+    positionCount: positions.length,
+    totalLiquidationValue,
+    totalCash,
+    top3,
+    topWeight,
+  };
+}
+
+function getOpenOrdersSummary() {
+  const orders = Array.isArray(schwabData.openOrders?.orders) ? schwabData.openOrders.orders : [];
+  const stale = orders.filter((order) => {
+    const entered = Date.parse(order?.enteredTime || "");
+    if (!Number.isFinite(entered)) return false;
+    return Date.now() - entered > 2 * 24 * 60 * 60 * 1000;
+  });
+  return { total: orders.length, stale: stale.length, recent: orders.slice(0, 5) };
+}
+
+function formatDollars(value) {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 0,
+  }).format(Number(value || 0));
+}
+
+function buildMissionZoneContext(agentId) {
+  const portfolio = getPortfolioSnapshot();
+  const orders = getOpenOrdersSummary();
+
+  if (agentId === "portfolio-copilot") {
+    return `Portfolio snapshot: accounts=${portfolio.accountCount}, positions=${portfolio.positionCount}, liquidationValue=${formatDollars(
+      portfolio.totalLiquidationValue
+    )}, cash=${formatDollars(portfolio.totalCash)}, largestWeight=${portfolio.topWeight}%. Top holdings: ${portfolio.top3
+      .map((p) => `${p.symbol} ${formatDollars(p.marketValue)}`)
+      .join(", ") || "none"}.`;
+  }
+  if (agentId === "risk-radar") {
+    return `Risk snapshot: positions=${portfolio.positionCount}, largest single-position weight=${portfolio.topWeight}%, openOrders=${orders.total}, staleOrders=${orders.stale}, cashBuffer=${formatDollars(
+      portfolio.totalCash
+    )}.`;
+  }
+  if (agentId === "order-flow-execution") {
+    return `Execution snapshot: openOrders=${orders.total}, staleOrders=${orders.stale}, recentOrders=${orders.recent
+      .map((o) => `${o.status || "UNKNOWN"} ${o.orderType || ""}`.trim())
+      .join(" | ") || "none"}.`;
+  }
+  return "Mission zone context unavailable.";
 }
 
 function startSchwabLogin() {
@@ -367,6 +412,53 @@ function renderAgentView(agent) {
       </article>
     `;
 
+  const portfolio = getPortfolioSnapshot();
+  const orders = getOpenOrdersSummary();
+  let missionDataCard = "";
+  if (schwabSession.connected && agent.id === "portfolio-copilot") {
+    missionDataCard = `
+      <article class="agent-card">
+        <h4>Portfolio Snapshot</h4>
+        <ul class="agent-list">
+          <li>Total value: ${formatDollars(portfolio.totalLiquidationValue)}</li>
+          <li>Cash balance: ${formatDollars(portfolio.totalCash)}</li>
+          <li>Total positions: ${portfolio.positionCount}</li>
+          <li>Largest position weight: ${portfolio.topWeight}%</li>
+        </ul>
+      </article>
+    `;
+  } else if (schwabSession.connected && agent.id === "risk-radar") {
+    missionDataCard = `
+      <article class="agent-card">
+        <h4>Risk Indicators</h4>
+        <ul class="agent-list">
+          <li>Largest concentration: ${portfolio.topWeight}%</li>
+          <li>Cash buffer: ${formatDollars(portfolio.totalCash)}</li>
+          <li>Open orders: ${orders.total}</li>
+          <li>Stale open orders: ${orders.stale}</li>
+        </ul>
+      </article>
+    `;
+  } else if (schwabSession.connected && agent.id === "order-flow-execution") {
+    const orderRows =
+      orders.recent
+        .map((order) => {
+          const symbol = order?.orderLegCollection?.[0]?.instrument?.symbol || "-";
+          const status = order?.status || "UNKNOWN";
+          const type = order?.orderType || "N/A";
+          return `<li>${symbol} - ${status} (${type})</li>`;
+        })
+        .join("") || "<li>No open orders right now.</li>";
+    missionDataCard = `
+      <article class="agent-card">
+        <h4>Execution Board</h4>
+        <ul class="agent-list">
+          ${orderRows}
+        </ul>
+      </article>
+    `;
+  }
+
   workspaceTableWrap.innerHTML = `
     <div class="agent-view">
       <section class="agent-hero">
@@ -382,6 +474,7 @@ function renderAgentView(agent) {
           <h4>Quick prompts</h4>
           <div class="prompt-list">${promptHtml}</div>
         </article>
+        ${missionDataCard}
         ${connectedSummary}
       </section>
     </div>
@@ -750,7 +843,7 @@ document.querySelector(".refresh-btn").addEventListener("click", () => {
   }
   const agent = AGENT_BY_TAB[currentTab];
   if (agent) {
-    renderAgentView(agent);
+    loadSchwabContextData().then(() => renderAgentView(agent));
   }
 });
 
@@ -831,6 +924,7 @@ function normalizeToBullets(text) {
 
 async function sendToGradient(userContent) {
   const agent = getCurrentAgent();
+  const missionContext = buildMissionZoneContext(agent.id);
   const schwabContext = schwabSession.connected
     ? `Schwab context: connected account count=${schwabSession.accountCount || 0}, primary account hash=${
         schwabSession.accountHash || "unknown"
@@ -840,6 +934,7 @@ async function sendToGradient(userContent) {
     { role: "system", content: agent.systemPrompt },
     { role: "system", content: RESPONSE_STYLE_PROMPT },
     { role: "system", content: schwabContext },
+    { role: "system", content: missionContext },
     ...chatHistory,
     { role: "user", content: userContent },
   ];
