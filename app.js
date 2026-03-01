@@ -13,8 +13,8 @@ const chatPanelBadge = document.getElementById("chatPanelBadge");
 const DO_API_BASE = "https://api.digitalocean.com";
 const TOKEN_KEY = "do_api_token";
 const API_CHAT_URL = "/api/chat/message";
-const HOME_TAB = "Assets";
 const SCHWAB_CONNECT_TAB = "Schwab Connect";
+const HOME_TAB = SCHWAB_CONNECT_TAB;
 const RESPONSE_STYLE_PROMPT =
   "Reply in 3-6 concise bullet points with short, scannable lines. Keep spacing clean and avoid long paragraphs.";
 
@@ -304,7 +304,7 @@ function setChatContextFromAgent(agent, announce = false) {
   }
 }
 
-function renderTabs(activeTab = "Assets") {
+function renderTabs(activeTab = HOME_TAB) {
   topTabs.innerHTML = "";
   [...openTabs].forEach((tabName) => {
     const btn = document.createElement("button");
@@ -747,6 +747,9 @@ async function loadDoView() {
 }
 
 function activateTab(tabName) {
+  if (tabName === "Assets") {
+    tabName = SCHWAB_CONNECT_TAB;
+  }
   if (!schwabSession.connected && tabName !== SCHWAB_CONNECT_TAB && tabName !== "Settings") {
     openTabs.add(SCHWAB_CONNECT_TAB);
     currentTab = SCHWAB_CONNECT_TAB;
@@ -765,8 +768,6 @@ function activateTab(tabName) {
     ? agent.subtitle
     : tabName === SCHWAB_CONNECT_TAB
       ? "Schwab OAuth required"
-      : tabName === "Assets"
-      ? "Market Watch"
       : tabName === "DigitalOcean"
         ? "Account & Droplets"
         : tabName === "Settings"
@@ -775,10 +776,6 @@ function activateTab(tabName) {
 
   renderTabs(tabName);
 
-  if (tabName === "Assets") {
-    renderAssetsView();
-    return;
-  }
   if (tabName === SCHWAB_CONNECT_TAB) {
     renderSchwabConnectView();
     return;
@@ -1014,8 +1011,7 @@ async function initApp() {
   if (schwabSession.connected) {
     activateTab(HOME_TAB);
   } else {
-    openTabs.add(SCHWAB_CONNECT_TAB);
-    activateTab(SCHWAB_CONNECT_TAB);
+    activateTab(HOME_TAB);
   }
   setChatContextFromAgent(getCurrentAgent(), true);
 
