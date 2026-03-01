@@ -347,6 +347,80 @@ td {
   color: var(--accent);
 }
 
+.agent-view {
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+}
+
+.agent-hero {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px;
+  background: #0e1629;
+}
+
+.agent-hero h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.agent-hero p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.agent-card {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  background: #0d1628;
+}
+
+.agent-card h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: #dce8ff;
+}
+
+.agent-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #bdd0f4;
+}
+
+.agent-list li {
+  margin: 0 0 6px;
+}
+
+.prompt-list {
+  display: grid;
+  gap: 8px;
+}
+
+.prompt-btn {
+  border: 1px solid #314266;
+  color: #c9dbff;
+  background: #101b2f;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.prompt-btn:hover {
+  border-color: #5474af;
+  background: #162640;
+}
+
 .chat-form {
   border-top: 1px solid var(--line);
   padding: 10px;
@@ -379,5 +453,11 @@ td {
 
   .chat-panel {
     display: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .agent-grid {
+    grid-template-columns: 1fr;
   }
 }
