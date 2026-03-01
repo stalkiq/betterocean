@@ -285,6 +285,208 @@ function normalizeTickerForStooq(rawSymbol) {
   return `${cleaned.replace(/\./g, "-")}.us`;
 }
 
+function normalizeTickerSymbol(rawSymbol) {
+  return String(rawSymbol || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z.\-]/g, "")
+    .slice(0, 12);
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function stripHtml(value) {
+  return decodeHtmlEntities(String(value || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim());
+}
+
+function parseSimpleRss(xmlText) {
+  const xml = String(xmlText || "");
+  const itemMatches = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
+  return itemMatches
+    .map((itemXml) => {
+      const readTag = (tag) => {
+        const match = itemXml.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i"));
+        return match ? stripHtml(match[1]) : "";
+      };
+      return {
+        title: readTag("title"),
+        link: readTag("link"),
+        pubDate: readTag("pubDate"),
+        source: readTag("source"),
+        description: readTag("description"),
+      };
+    })
+    .filter((item) => item.title && item.link);
+}
+
+async function fetchTickerNews(symbol, limit = 8) {
+  const query = encodeURIComponent(`${symbol} stock market news`);
+  const url = `https://news.google.com/rss/search?q=${query}&hl=en-US&gl=US&ceid=US:en`;
+  const upstream = await getText(url);
+  if (upstream.status < 200 || upstream.status >= 300) {
+    throw new Error(`News feed request failed (${upstream.status})`);
+  }
+  return parseSimpleRss(upstream.data).slice(0, limit);
+}
+
+function buildTickerReportFallback(symbol, quote, news) {
+  const open = Number(quote?.open || 0);
+  const close = Number(quote?.close || 0);
+  const deltaPct =
+    Number.isFinite(open) && open > 0 && Number.isFinite(close) ? (((close - open) / open) * 100).toFixed(2) : null;
+  const signal =
+    deltaPct == null
+      ? "neutral"
+      : Number(deltaPct) >= 0.4
+        ? "bullish"
+        : Number(deltaPct) <= -0.4
+          ? "bearish"
+          : "neutral";
+  return {
+    symbol,
+    signal,
+    confidence: "medium",
+    overview:
+      "AI deep-dive unavailable. This fallback view uses current market pricing and recent headlines only; treat as directional context, not investment advice.",
+    bullishFactors:
+      signal === "bullish"
+        ? ["Price is trading above today's open, suggesting positive session momentum."]
+        : ["No strong bullish momentum detected from price action alone."],
+    bearishFactors:
+      signal === "bearish"
+        ? ["Price is trading below today's open, signaling near-term downside pressure."]
+        : ["No strong bearish momentum detected from price action alone."],
+    neutralFactors: ["Monitor intraday range, volume, and headline follow-through before acting."],
+    catalystWatch: ["Earnings updates", "Guidance changes", "Executive leadership headlines", "New partnerships or M&A"],
+    riskFlags: ["Headline volatility can reverse intraday direction quickly."],
+    narrativeSummary: "Combine this with your own risk controls and position sizing.",
+    newsUsed: news.map((item) => ({
+      title: item.title,
+      link: item.link,
+      pubDate: item.pubDate || "",
+      source: item.source || "",
+    })),
+    quote: quote || null,
+    source: "fallback",
+    asOf: new Date().toISOString(),
+  };
+}
+
+async function buildTickerDeepDiveReport(symbol) {
+  const safeSymbol = normalizeTickerSymbol(symbol);
+  if (!safeSymbol) {
+    const err = new Error("A valid ticker symbol is required.");
+    err.status = 400;
+    throw err;
+  }
+
+  const [quote, news] = await Promise.all([
+    fetchStooqQuote(normalizeTickerForStooq(safeSymbol), safeSymbol).catch(() => null),
+    fetchTickerNews(safeSymbol, 8).catch(() => []),
+  ]);
+
+  const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
+  const key = process.env.GRADIENT_AGENT_KEY;
+  if (!endpoint || !key) {
+    return buildTickerReportFallback(safeSymbol, quote, news);
+  }
+
+  const base = endpoint.replace(/\/+$/, "");
+  const completionsUrl = base.includes("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+  const prompt = `
+You are a financial research analyst generating a concise, structured ticker deep-dive.
+
+Ticker: ${safeSymbol}
+Quote JSON:
+${JSON.stringify(quote || {}, null, 2)}
+
+Recent news JSON:
+${JSON.stringify(news, null, 2)}
+
+Return STRICT JSON only with this exact shape:
+{
+  "signal": "bullish|bearish|neutral",
+  "confidence": "high|medium|low",
+  "overview": "2-4 sentence high-level view",
+  "bullishFactors": ["string", "string"],
+  "bearishFactors": ["string", "string"],
+  "neutralFactors": ["string", "string"],
+  "catalystWatch": ["string", "string"],
+  "riskFlags": ["string", "string"],
+  "narrativeSummary": "1-2 sentence summary"
+}
+
+Rules:
+- Ground reasoning in the provided quote + headlines.
+- Mention concrete drivers when available: products, partnerships, acquisitions, leadership changes, legal/regulatory events, protests, demand trends.
+- Do not fabricate numbers or events not in the inputs.
+- Keep each bullet concise and decision-useful.
+`;
+
+  const upstream = await postJson(
+    completionsUrl,
+    {
+      model: process.env.GRADIENT_MODEL || "openai-gpt-oss-120b",
+      stream: false,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a disciplined equity analyst. Return strict JSON only. No markdown, no extra text.",
+        },
+        { role: "user", content: prompt },
+      ],
+    },
+    {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+    }
+  );
+
+  if (upstream.status < 200 || upstream.status >= 300) {
+    return buildTickerReportFallback(safeSymbol, quote, news);
+  }
+
+  const content = String(upstream.data?.choices?.[0]?.message?.content || "").trim();
+  const jsonMatch = content.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    return buildTickerReportFallback(safeSymbol, quote, news);
+  }
+  const parsed = JSON.parse(jsonMatch[0]);
+  return {
+    symbol: safeSymbol,
+    signal: ["bullish", "bearish", "neutral"].includes(String(parsed.signal || "").toLowerCase())
+      ? String(parsed.signal).toLowerCase()
+      : "neutral",
+    confidence: ["high", "medium", "low"].includes(String(parsed.confidence || "").toLowerCase())
+      ? String(parsed.confidence).toLowerCase()
+      : "medium",
+    overview: String(parsed.overview || "").trim(),
+    bullishFactors: Array.isArray(parsed.bullishFactors) ? parsed.bullishFactors.map(String).slice(0, 6) : [],
+    bearishFactors: Array.isArray(parsed.bearishFactors) ? parsed.bearishFactors.map(String).slice(0, 6) : [],
+    neutralFactors: Array.isArray(parsed.neutralFactors) ? parsed.neutralFactors.map(String).slice(0, 6) : [],
+    catalystWatch: Array.isArray(parsed.catalystWatch) ? parsed.catalystWatch.map(String).slice(0, 6) : [],
+    riskFlags: Array.isArray(parsed.riskFlags) ? parsed.riskFlags.map(String).slice(0, 6) : [],
+    narrativeSummary: String(parsed.narrativeSummary || "").trim(),
+    newsUsed: news.map((item) => ({
+      title: item.title,
+      link: item.link,
+      pubDate: item.pubDate || "",
+      source: item.source || "",
+    })),
+    quote: quote || null,
+    source: "gradient",
+    asOf: new Date().toISOString(),
+  };
+}
+
 function readMessages(req) {
   if (Array.isArray(req.body?.messages)) return req.body.messages;
   return null;
@@ -585,6 +787,20 @@ app.get(["/market/quotes", "/api/market/quotes"], async (req, res) => {
     });
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to load market quotes." });
+  }
+});
+
+app.get(["/market/ticker-report", "/api/market/ticker-report"], async (req, res) => {
+  const symbol = normalizeTickerSymbol(req.query.symbol || "");
+  if (!symbol) {
+    sendJson(res, 400, { error: "symbol query param is required." });
+    return;
+  }
+  try {
+    const report = await buildTickerDeepDiveReport(symbol);
+    sendJson(res, 200, report);
+  } catch (err) {
+    sendJson(res, err.status || 502, { error: err.message || "Failed to build ticker report." });
   }
 });
 

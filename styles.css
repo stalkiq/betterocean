@@ -462,6 +462,142 @@ td {
   gap: 12px;
 }
 
+.ticker-intel-layout {
+ display: grid;
+ grid-template-columns: 240px 1fr;
+ gap: 12px;
+}
+
+.ticker-intel-list,
+.ticker-intel-report {
+ border: 1px solid var(--line);
+ border-radius: 12px;
+ background: #0d1628;
+}
+
+.ticker-intel-list {
+ padding: 12px;
+}
+
+.ticker-intel-list h4 {
+ margin: 0;
+ font-size: 14px;
+ color: #dce8ff;
+}
+
+.ticker-items {
+ margin-top: 10px;
+ display: grid;
+ gap: 6px;
+}
+
+.ticker-item {
+ border: 1px solid #2e4268;
+ border-radius: 8px;
+ background: #0f1a2f;
+ color: #cfe0ff;
+ padding: 8px 10px;
+ text-align: left;
+ cursor: pointer;
+}
+
+.ticker-item:hover {
+ border-color: #5474af;
+ background: #132440;
+}
+
+.ticker-item.active {
+ border-color: #6ea3ff;
+ background: linear-gradient(180deg, #1b335d 0%, #172a4c 100%);
+ color: #f1f6ff;
+}
+
+.ticker-item-symbol {
+ font-weight: 700;
+ letter-spacing: 0.03em;
+}
+
+.ticker-intel-report {
+ padding: 14px;
+ display: grid;
+ gap: 12px;
+}
+
+.ticker-report-header {
+ display: flex;
+ align-items: flex-start;
+ justify-content: space-between;
+ gap: 12px;
+ border: 1px solid #263a59;
+ border-radius: 10px;
+ background: #0f1b32;
+ padding: 12px;
+}
+
+.ticker-report-header h3 {
+ margin: 0;
+ font-size: 20px;
+}
+
+.ticker-report-header p {
+ margin: 8px 0 0;
+ color: var(--muted);
+ line-height: 1.5;
+ max-width: 760px;
+}
+
+.ticker-report-signal {
+ display: grid;
+ gap: 6px;
+ justify-items: end;
+}
+
+.ticker-quote-grid {
+ display: grid;
+ grid-template-columns: repeat(3, minmax(0, 1fr));
+ gap: 12px;
+}
+
+.ticker-report-grid {
+ display: grid;
+ grid-template-columns: 1fr 1fr;
+ gap: 12px;
+}
+
+.ticker-bullets {
+ margin: 8px 0 0;
+ padding-left: 18px;
+ color: #c6d7f5;
+ line-height: 1.5;
+}
+
+.ticker-news-list {
+ margin: 8px 0 0;
+ padding-left: 18px;
+ display: grid;
+ gap: 8px;
+}
+
+.ticker-news-list li {
+ color: #c6d7f5;
+}
+
+.ticker-news-list a {
+ color: #9ac4ff;
+ text-decoration: none;
+}
+
+.ticker-news-list a:hover {
+ text-decoration: underline;
+}
+
+.ticker-news-list span {
+ display: block;
+ color: var(--muted);
+ font-size: 11px;
+ margin-top: 2px;
+}
+
 .schwab-view {
   padding: 16px;
   display: grid;
@@ -813,4 +949,16 @@ td {
   .schwab-grid {
     grid-template-columns: 1fr;
   }
+
+ .ticker-intel-layout {
+ grid-template-columns: 1fr;
+ }
+
+ .ticker-report-grid {
+ grid-template-columns: 1fr;
+ }
+
+ .ticker-quote-grid {
+ grid-template-columns: 1fr;
+ }
 }

@@ -15,6 +15,7 @@ const TOKEN_KEY = "do_api_token";
 const API_CHAT_URL = "/api/chat/message";
 const SCHWAB_CONNECT_TAB = "Schwab Connect";
 const INVESTMENTS_TAB = "Investments";
+const TICKER_INTEL_TAB = "Ticker Intel";
 const TIME_TAB = "Time";
 const HOME_TAB = SCHWAB_CONNECT_TAB;
 const RESPONSE_STYLE_PROMPT =
@@ -83,7 +84,7 @@ const AGENTS = [
 const AGENT_BY_ID = Object.fromEntries(AGENTS.map((agent) => [agent.id, agent]));
 const AGENT_BY_TAB = Object.fromEntries(AGENTS.map((agent) => [agent.tab, agent]));
 
-const openTabs = new Set([HOME_TAB, INVESTMENTS_TAB, TIME_TAB]);
+const openTabs = new Set([HOME_TAB, INVESTMENTS_TAB, TICKER_INTEL_TAB, TIME_TAB]);
 let currentTab = HOME_TAB;
 let currentAgentId = AGENTS[0].id;
 const announcedAgents = new Set();
@@ -94,6 +95,24 @@ let schwabData = { accounts: null, openOrders: null };
 let investmentsMarket = { assets: [], updatedAt: null };
 let openingPlaybook = { buckets: [], asOf: null };
 let openingQuotesBySymbol = {};
+const TICKER_WATCHLIST = [
+  "AAPL",
+  "MSFT",
+  "NVDA",
+  "AMZN",
+  "GOOGL",
+  "META",
+  "TSLA",
+  "JPM",
+  "XOM",
+  "UNH",
+];
+let tickerIntelState = {
+  selected: "AAPL",
+  loading: false,
+  report: null,
+  error: "",
+};
 let marketCountdownTimer = null;
 
 function getDoToken() {
@@ -171,6 +190,23 @@ async function loadOpeningPlaybook() {
     source: data.source || "unknown",
   };
   return openingPlaybook;
+}
+
+async function loadTickerIntelReport(symbol) {
+  const safeSymbol = String(symbol || "")
+    .trim()
+    .toUpperCase();
+  if (!safeSymbol) throw new Error("Ticker symbol is required.");
+  const data = await schwabApi(`/api/market/ticker-report?symbol=${encodeURIComponent(safeSymbol)}`, {
+    method: "GET",
+  });
+  tickerIntelState = {
+    selected: safeSymbol,
+    loading: false,
+    report: data,
+    error: "",
+  };
+  return data;
 }
 
 async function loadPublicQuotes(symbols) {
@@ -300,6 +336,163 @@ function getSignalFromDelta(pct) {
 function renderSignalPill(pct) {
   const signal = getSignalFromDelta(pct);
   return `<span class="signal-pill ${signal.className}">${signal.label}</span>`;
+}
+
+function toSignalBadge(signal = "neutral") {
+  const clean = String(signal || "neutral").toLowerCase();
+  if (clean === "bullish") return '<span class="signal-pill bull">Bullish</span>';
+  if (clean === "bearish") return '<span class="signal-pill bear">Bearish</span>';
+  return '<span class="signal-pill neutral">Neutral</span>';
+}
+
+function renderListItems(items) {
+  const list = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!list.length) return '<li class="settings-desc">No items.</li>';
+  return list.map((item) => `<li>${escapeHtml(String(item))}</li>`).join("");
+}
+
+function renderTickerIntelLoading() {
+  const selected = tickerIntelState.selected || TICKER_WATCHLIST[0];
+  const watchlistHtml = TICKER_WATCHLIST.map(
+    (symbol) => `
+      <button type="button" class="ticker-item ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
+        <span class="ticker-item-symbol">${symbol}</span>
+      </button>
+    `
+  ).join("");
+  workspaceTableWrap.innerHTML = `
+    <section class="ticker-intel-layout">
+      <aside class="ticker-intel-list">
+        <h4>Tickers</h4>
+        <p class="settings-desc">Select a ticker for AI research signals.</p>
+        <div class="ticker-items">${watchlistHtml}</div>
+      </aside>
+      <article class="ticker-intel-report">
+        <div class="do-loading">Building deep-dive report for ${selected}...</div>
+      </article>
+    </section>
+  `;
+  wireTickerIntelEvents();
+}
+
+function renderTickerIntelView() {
+  const selected = tickerIntelState.selected || TICKER_WATCHLIST[0];
+  const report = tickerIntelState.report;
+  const watchlistHtml = TICKER_WATCHLIST.map(
+    (symbol) => `
+      <button type="button" class="ticker-item ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
+        <span class="ticker-item-symbol">${symbol}</span>
+      </button>
+    `
+  ).join("");
+
+  const quote = report?.quote;
+  const openDelta = quote ? getOpenDeltaPercent(quote) : null;
+  const quoteSummary = quote
+    ? `
+      <section class="ticker-quote-grid">
+        <article class="schwab-metric-card"><h4>Last</h4><div class="schwab-metric-value small">${renderPriceCell(
+          quote.close
+        )}</div></article>
+        <article class="schwab-metric-card"><h4>Open Δ%</h4><div class="schwab-metric-value small ${
+          openDelta > 0 ? "value-up" : openDelta < 0 ? "value-down" : "value-flat"
+        }">${formatPercent(openDelta)}</div></article>
+        <article class="schwab-metric-card"><h4>Range</h4><div class="schwab-metric-value small">${renderPriceCell(
+          quote.low
+        )} - ${renderPriceCell(quote.high)}</div></article>
+      </section>
+    `
+    : "";
+
+  const newsHtml = Array.isArray(report?.newsUsed)
+    ? report.newsUsed
+        .slice(0, 8)
+        .map(
+          (item) => `
+            <li>
+              <a href="${escapeHtml(item.link || "#")}" target="_blank" rel="noopener noreferrer">${escapeHtml(
+                item.title || "Untitled headline"
+              )}</a>
+              <span>${escapeHtml(item.source || "News")} ${item.pubDate ? `• ${escapeHtml(item.pubDate)}` : ""}</span>
+            </li>
+          `
+        )
+        .join("")
+    : "";
+
+  const reportHtml = tickerIntelState.error
+    ? `<div class="do-error"><strong>Error</strong><p>${escapeHtml(tickerIntelState.error)}</p></div>`
+    : !report
+      ? '<div class="do-loading">Choose a ticker to load a report.</div>'
+      : `
+      <header class="ticker-report-header">
+        <div>
+          <h3>${escapeHtml(report.symbol || selected)} Deep-Dive</h3>
+          <p>${escapeHtml(report.overview || "No overview available.")}</p>
+        </div>
+        <div class="ticker-report-signal">
+          ${toSignalBadge(report.signal)}
+          <span class="settings-desc">Confidence: ${escapeHtml(report.confidence || "medium")}</span>
+        </div>
+      </header>
+      ${quoteSummary}
+      <section class="ticker-report-grid">
+        <article class="schwab-card"><h4>Bullish Case</h4><ul class="ticker-bullets">${renderListItems(
+          report.bullishFactors
+        )}</ul></article>
+        <article class="schwab-card"><h4>Bearish Case</h4><ul class="ticker-bullets">${renderListItems(
+          report.bearishFactors
+        )}</ul></article>
+        <article class="schwab-card"><h4>Neutral / Watch</h4><ul class="ticker-bullets">${renderListItems(
+          report.neutralFactors
+        )}</ul></article>
+        <article class="schwab-card"><h4>Catalysts</h4><ul class="ticker-bullets">${renderListItems(
+          report.catalystWatch
+        )}</ul></article>
+      </section>
+      <section class="schwab-card">
+        <h4>Risk Flags</h4>
+        <ul class="ticker-bullets">${renderListItems(report.riskFlags)}</ul>
+        <p class="schwab-card-sub">${escapeHtml(report.narrativeSummary || "")}</p>
+      </section>
+      <section class="schwab-card">
+        <h4>Recent Headlines Used By AI</h4>
+        <ul class="ticker-news-list">${newsHtml || '<li class="settings-desc">No recent headlines available.</li>'}</ul>
+      </section>
+    `;
+
+  workspaceTableWrap.innerHTML = `
+    <section class="ticker-intel-layout">
+      <aside class="ticker-intel-list">
+        <h4>Tickers</h4>
+        <p class="settings-desc">Left list = symbols, right panel = Gradient AI research report.</p>
+        <div class="ticker-items">${watchlistHtml}</div>
+      </aside>
+      <article class="ticker-intel-report">
+        ${reportHtml}
+      </article>
+    </section>
+  `;
+  wireTickerIntelEvents();
+}
+
+function wireTickerIntelEvents() {
+  workspaceTableWrap.querySelectorAll(".ticker-item").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const symbol = btn.dataset.ticker;
+      if (!symbol) return;
+      tickerIntelState = { ...tickerIntelState, selected: symbol, loading: true, error: "" };
+      renderTickerIntelLoading();
+      loadTickerIntelReport(symbol)
+        .then(() => {
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        })
+        .catch((error) => {
+          tickerIntelState = { ...tickerIntelState, loading: false, report: null, error: error.message || "Failed to load ticker report." };
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        });
+    });
+  });
 }
 
 function getLinkedAccounts() {
@@ -489,7 +682,13 @@ function renderTabs(activeTab = HOME_TAB) {
 }
 
 function closeTab(tabName) {
-  if (tabName === HOME_TAB || tabName === INVESTMENTS_TAB || tabName === TIME_TAB || !openTabs.has(tabName))
+  if (
+    tabName === HOME_TAB ||
+    tabName === INVESTMENTS_TAB ||
+    tabName === TICKER_INTEL_TAB ||
+    tabName === TIME_TAB ||
+    !openTabs.has(tabName)
+  )
     return;
   const tabs = [...openTabs];
   const currentIndex = tabs.indexOf(tabName);
@@ -1007,6 +1206,7 @@ function activateTab(tabName) {
     tabName !== SCHWAB_CONNECT_TAB &&
     tabName !== "Settings" &&
     tabName !== INVESTMENTS_TAB &&
+    tabName !== TICKER_INTEL_TAB &&
     tabName !== TIME_TAB
   ) {
     openTabs.add(SCHWAB_CONNECT_TAB);
@@ -1028,6 +1228,8 @@ function activateTab(tabName) {
       ? "Schwab OAuth required"
       : tabName === INVESTMENTS_TAB
         ? "Public market dashboard"
+          : tabName === TICKER_INTEL_TAB
+            ? "Ticker list + Gradient AI deep-dive"
         : tabName === TIME_TAB
           ? "Market open countdown + AI playbook"
       : tabName === "DigitalOcean"
@@ -1052,6 +1254,21 @@ function activateTab(tabName) {
         workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
           error.message || "Failed to load market data."
         }</p></div>`;
+      });
+    return;
+  }
+  if (tabName === TICKER_INTEL_TAB) {
+    renderTickerIntelLoading();
+    loadTickerIntelReport(tickerIntelState.selected || TICKER_WATCHLIST[0])
+      .then(() => renderTickerIntelView())
+      .catch((error) => {
+        tickerIntelState = {
+          ...tickerIntelState,
+          loading: false,
+          report: null,
+          error: error.message || "Failed to build ticker report.",
+        };
+        renderTickerIntelView();
       });
     return;
   }
@@ -1224,6 +1441,10 @@ document.querySelector(".refresh-btn").addEventListener("click", () => {
       });
     return;
   }
+  if (currentTab === TICKER_INTEL_TAB) {
+    activateTab(TICKER_INTEL_TAB);
+    return;
+  }
   if (currentTab === TIME_TAB) {
     activateTab(TIME_TAB);
     return;
@@ -1345,10 +1566,15 @@ async function sendToGradient(userContent) {
 
 chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!schwabSession.connected && currentTab !== INVESTMENTS_TAB && currentTab !== TIME_TAB) {
+  if (
+    !schwabSession.connected &&
+    currentTab !== INVESTMENTS_TAB &&
+    currentTab !== TICKER_INTEL_TAB &&
+    currentTab !== TIME_TAB
+  ) {
     appendChatMessage(
       "assistant",
-      "Please connect your Charles Schwab account first for account-specific analysis. You can still use the Investments tab without login.",
+      "Please connect your Charles Schwab account first for account-specific analysis. You can still use the Investments, Ticker Intel, and Time tabs without login.",
       "msg-error"
     );
     openTabs.add(SCHWAB_CONNECT_TAB);
@@ -1403,6 +1629,7 @@ async function initApp() {
 
   renderTabs(HOME_TAB);
   openTabs.add(INVESTMENTS_TAB);
+  openTabs.add(TICKER_INTEL_TAB);
   openTabs.add(TIME_TAB);
   if (schwabSession.connected) {
     activateTab(HOME_TAB);
