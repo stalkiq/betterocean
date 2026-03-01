@@ -1,8 +1,8 @@
 /**
  * BetterOcean chat proxy for DigitalOcean Gradient Serverless Inference.
- * CommonJS action format is used for maximum OpenWhisk compatibility.
+ * ESM action format for DigitalOcean Functions.
  */
-const https = require("https");
+import https from "https";
 
 function jsonResponse(statusCode, payload) {
   return {
@@ -20,12 +20,10 @@ function parseRequestMessages(event) {
 
   if (Array.isArray(event.messages)) return event.messages;
 
-  // Common App Platform web action shape.
   if (event.body && typeof event.body === "object" && Array.isArray(event.body.messages)) {
     return event.body.messages;
   }
 
-  // Fallback for raw OpenWhisk body pass-through.
   if (typeof event.__ow_body === "string") {
     try {
       const parsed = JSON.parse(event.__ow_body);
@@ -75,7 +73,6 @@ function httpsPostJson(url, requestBody, headers) {
       }
     );
 
-    // Hard timeout so App Platform does not hit 60s gateway timeout.
     req.setTimeout(25000, () => {
       req.destroy(new Error("Upstream request timed out"));
     });
@@ -86,7 +83,7 @@ function httpsPostJson(url, requestBody, headers) {
   });
 }
 
-exports.main = async function main(event = {}) {
+export async function main(event = {}) {
   const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
   const apiKey = process.env.GRADIENT_AGENT_KEY;
 
@@ -138,4 +135,4 @@ exports.main = async function main(event = {}) {
       error: err && err.message ? err.message : "Gradient request failed",
     });
   }
-};
+}
