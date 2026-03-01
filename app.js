@@ -93,6 +93,7 @@ let schwabSession = { connected: false };
 let schwabData = { accounts: null, openOrders: null };
 let investmentsMarket = { assets: [], updatedAt: null };
 let openingPlaybook = { buckets: [], asOf: null };
+let openingQuotesBySymbol = {};
 let marketCountdownTimer = null;
 
 function getDoToken() {
@@ -170,6 +171,23 @@ async function loadOpeningPlaybook() {
     source: data.source || "unknown",
   };
   return openingPlaybook;
+}
+
+async function loadPublicQuotes(symbols) {
+  const unique = [...new Set((symbols || []).map((s) => String(s || "").trim().toUpperCase()).filter(Boolean))];
+  if (!unique.length) {
+    openingQuotesBySymbol = {};
+    return openingQuotesBySymbol;
+  }
+
+  const data = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(unique.join(","))}`, {
+    method: "GET",
+  });
+  const quotes = Array.isArray(data.quotes) ? data.quotes : [];
+  openingQuotesBySymbol = Object.fromEntries(
+    quotes.map((q) => [String(q.label || q.symbol || "").toUpperCase(), q])
+  );
+  return openingQuotesBySymbol;
 }
 
 function getEtNowParts() {
@@ -250,6 +268,20 @@ function startMarketCountdown() {
   };
   update();
   marketCountdownTimer = setInterval(update, 1000);
+}
+
+function renderPriceCell(value) {
+  if (!Number.isFinite(Number(value))) return "-";
+  return `$${Number(value).toFixed(2)}`;
+}
+
+function renderOpenDelta(quote) {
+  const open = Number(quote?.open || 0);
+  const close = Number(quote?.close || 0);
+  if (!Number.isFinite(open) || !Number.isFinite(close) || open <= 0) return "-";
+  const pct = ((close - open) / open) * 100;
+  const sign = pct >= 0 ? "+" : "";
+  return `${sign}${pct.toFixed(2)}%`;
 }
 
 function getLinkedAccounts() {
@@ -977,15 +1009,51 @@ function activateTab(tabName) {
   if (tabName === TIME_TAB) {
     workspaceTableWrap.innerHTML = '<div class="do-loading">Building opening bell playbook...</div>';
     loadOpeningPlaybook()
-      .then(() => {
+      .then(async () => {
+        const symbols = openingPlaybook.buckets.flatMap((bucket) =>
+          Array.isArray(bucket.tickers) ? bucket.tickers : []
+        );
+        await loadPublicQuotes(symbols).catch(() => ({}));
+
         const bucketHtml = openingPlaybook.buckets
           .map((bucket) => {
-            const tickers = Array.isArray(bucket.tickers) ? bucket.tickers.join(", ") : "";
+            const tickerRows = (Array.isArray(bucket.tickers) ? bucket.tickers : [])
+              .map((symbol) => {
+                const quote = openingQuotesBySymbol[String(symbol).toUpperCase()];
+                if (!quote || quote.unavailable) {
+                  return `<tr><td>${symbol}</td><td colspan="5">Price unavailable</td></tr>`;
+                }
+                return `
+                  <tr>
+                    <td>${symbol}</td>
+                    <td>${renderPriceCell(quote.close)}</td>
+                    <td>${renderPriceCell(quote.open)}</td>
+                    <td>${renderPriceCell(quote.high)}</td>
+                    <td>${renderPriceCell(quote.low)}</td>
+                    <td>${renderOpenDelta(quote)}</td>
+                  </tr>
+                `;
+              })
+              .join("");
             return `
               <article class="schwab-card">
                 <h4>${bucket.name || "Bucket"}</h4>
                 <p class="schwab-card-sub">${bucket.thesis || "No thesis provided."}</p>
-                <div class="trade-status success">Tickers: ${tickers || "-"}</div>
+                <div class="time-table-wrap">
+                  <table class="time-table">
+                    <thead>
+                      <tr>
+                        <th>Ticker</th>
+                        <th>Last</th>
+                        <th>Open</th>
+                        <th>High</th>
+                        <th>Low</th>
+                        <th>Open Δ%</th>
+                      </tr>
+                    </thead>
+                    <tbody>${tickerRows || '<tr><td colspan="6">No tickers.</td></tr>'}</tbody>
+                  </table>
+                </div>
               </article>
             `;
           })

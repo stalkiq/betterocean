@@ -275,6 +275,16 @@ async function fetchStooqQuote(symbol, label) {
   };
 }
 
+function normalizeTickerForStooq(rawSymbol) {
+  const cleaned = String(rawSymbol || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "");
+  if (!cleaned) return "";
+  if (cleaned.endsWith(".us")) return cleaned;
+  return `${cleaned.replace(/\./g, "-")}.us`;
+}
+
 function readMessages(req) {
   if (Array.isArray(req.body?.messages)) return req.body.messages;
   return null;
@@ -545,6 +555,36 @@ app.get(["/market/opening-playbook", "/api/market/opening-playbook"], async (_re
     sendJson(res, 200, playbook);
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to build opening playbook." });
+  }
+});
+
+app.get(["/market/quotes", "/api/market/quotes"], async (req, res) => {
+  const symbols = String(req.query.symbols || "")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean)
+    .slice(0, 50);
+  if (!symbols.length) {
+    sendJson(res, 400, { error: "symbols query param is required." });
+    return;
+  }
+
+  try {
+    const quotes = (
+      await Promise.all(
+        symbols.map((symbol) =>
+          fetchStooqQuote(normalizeTickerForStooq(symbol), symbol).catch(() => null)
+        )
+      )
+    ).filter(Boolean);
+
+    const bySymbol = Object.fromEntries(quotes.map((quote) => [quote.label.toUpperCase(), quote]));
+    sendJson(res, 200, {
+      updatedAt: new Date().toISOString(),
+      quotes: symbols.map((symbol) => bySymbol[symbol] || { symbol, label: symbol, unavailable: true }),
+    });
+  } catch (err) {
+    sendJson(res, 502, { error: err.message || "Failed to load market quotes." });
   }
 });
 

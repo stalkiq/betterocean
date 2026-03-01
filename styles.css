@@ -597,6 +597,36 @@ td {
   color: #ff9ead;
 }
 
+.time-table-wrap {
+  margin-top: 10px;
+  border: 1px solid #253955;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.time-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.time-table th,
+.time-table td {
+  font-size: 11px;
+  padding: 7px 8px;
+  border-bottom: 1px solid #1f2f4c;
+  text-align: left;
+}
+
+.time-table th {
+  color: #9eb2d9;
+  background: #0f1b30;
+  font-weight: 600;
+}
+
+.time-table td {
+  color: #d9e6ff;
+}
+
 .agent-hero {
   border: 1px solid var(--line);
   border-radius: 10px;
