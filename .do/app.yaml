@@ -85,7 +85,7 @@ services:
       - key: SCHWAB_DRY_RUN
         scope: RUN_AND_BUILD_TIME
         type: GENERAL
-        value: "true"
+        value: "false"
       - key: SCHWAB_MAX_ORDER_QTY
         scope: RUN_AND_BUILD_TIME
         type: GENERAL

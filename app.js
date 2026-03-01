@@ -212,6 +212,25 @@ async function logoutSchwab() {
   activateTab(SCHWAB_CONNECT_TAB);
 }
 
+function buildEquityMarketOrder({ side, symbol, quantity }) {
+  return {
+    session: "NORMAL",
+    duration: "DAY",
+    orderType: "MARKET",
+    orderStrategyType: "SINGLE",
+    orderLegCollection: [
+      {
+        instruction: side,
+        quantity,
+        instrument: {
+          symbol,
+          assetType: "EQUITY",
+        },
+      },
+    ],
+  };
+}
+
 function getCurrentAgent() {
   return AGENT_BY_ID[currentAgentId] || AGENTS[0];
 }
@@ -443,6 +462,33 @@ function renderSchwabConnectView() {
             <li>Guardrailed order placement and cancellation via backend APIs.</li>
           </ul>
         </article>
+
+        <article class="schwab-card">
+          <h4>Trade Ticket</h4>
+          <p class="schwab-card-sub">
+            Place a simple market order from BetterOcean. ${
+              isConnected ? "Orders are sent through your connected Schwab account." : "Connect Schwab to enable trading."
+            }
+          </p>
+          <form class="trade-form" id="tradeTicketForm">
+            <label class="trade-label">Side</label>
+            <select class="trade-input" id="tradeSide" ${isConnected ? "" : "disabled"}>
+              <option value="BUY">Buy</option>
+              <option value="SELL">Sell</option>
+            </select>
+
+            <label class="trade-label">Symbol</label>
+            <input class="trade-input" id="tradeSymbol" placeholder="AAPL" autocomplete="off" ${isConnected ? "" : "disabled"} />
+
+            <label class="trade-label">Quantity</label>
+            <input class="trade-input" id="tradeQty" type="number" min="1" step="1" value="1" ${isConnected ? "" : "disabled"} />
+
+            <button type="submit" class="schwab-btn schwab-btn-primary" ${isConnected ? "" : "disabled"}>
+              Submit Order
+            </button>
+          </form>
+          <div class="trade-status" id="tradeTicketStatus"></div>
+        </article>
       </section>
     </div>
   `;
@@ -456,6 +502,56 @@ function renderSchwabConnectView() {
         await logoutSchwab();
       } catch (e) {
         appendChatMessage("assistant", e.message || "Failed to disconnect Schwab.", "msg-error");
+      }
+    });
+  }
+
+  const tradeForm = document.getElementById("tradeTicketForm");
+  const tradeStatus = document.getElementById("tradeTicketStatus");
+  if (tradeForm && tradeStatus) {
+    tradeForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      if (!schwabSession.connected) return;
+
+      const side = String(document.getElementById("tradeSide")?.value || "BUY").toUpperCase();
+      const symbol = String(document.getElementById("tradeSymbol")?.value || "")
+        .trim()
+        .toUpperCase();
+      const quantity = Number(document.getElementById("tradeQty")?.value || 0);
+
+      if (!symbol) {
+        tradeStatus.textContent = "Enter a valid symbol.";
+        tradeStatus.className = "trade-status error";
+        return;
+      }
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        tradeStatus.textContent = "Quantity must be greater than zero.";
+        tradeStatus.className = "trade-status error";
+        return;
+      }
+
+      const order = buildEquityMarketOrder({ side, symbol, quantity });
+      tradeStatus.textContent = "Submitting order...";
+      tradeStatus.className = "trade-status pending";
+
+      try {
+        const result = await schwabApi("/api/schwab/orders", {
+          method: "POST",
+          body: JSON.stringify({ order }),
+        });
+        if (result?.dryRun) {
+          tradeStatus.textContent = result.message || "Dry run: order validated but not sent.";
+          tradeStatus.className = "trade-status pending";
+          appendChatMessage("assistant", tradeStatus.textContent, "msg-muted");
+          return;
+        }
+        tradeStatus.textContent = `Order submitted: ${side} ${quantity} ${symbol}`;
+        tradeStatus.className = "trade-status success";
+        appendChatMessage("assistant", tradeStatus.textContent, "msg-muted");
+        await loadSchwabContextData();
+      } catch (error) {
+        tradeStatus.textContent = error.message || "Order submission failed.";
+        tradeStatus.className = "trade-status error";
       }
     });
   }
