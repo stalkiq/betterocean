@@ -10,4 +10,4 @@ packages:
       - name: message
         runtime: nodejs:22
         web: true
-        main: message.mjs
+        main: message.js

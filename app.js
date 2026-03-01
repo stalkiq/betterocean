@@ -10,7 +10,8 @@ const workspaceTableWrap = document.getElementById("workspaceTableWrap");
 
 const DO_API_BASE = "https://api.digitalocean.com";
 const TOKEN_KEY = "do_api_token";
-const API_CHAT_URL = "/api/chat/message";
+// App Platform Functions web actions are exposed as .json endpoints.
+const API_CHAT_URL = "/api/chat/message.json";
 
 const openTabs = new Set(["Assets"]);
 let currentTab = "Assets";
