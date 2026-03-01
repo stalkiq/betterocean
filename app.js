@@ -275,13 +275,31 @@ function renderPriceCell(value) {
   return `$${Number(value).toFixed(2)}`;
 }
 
-function renderOpenDelta(quote) {
+function getOpenDeltaPercent(quote) {
   const open = Number(quote?.open || 0);
   const close = Number(quote?.close || 0);
-  if (!Number.isFinite(open) || !Number.isFinite(close) || open <= 0) return "-";
-  const pct = ((close - open) / open) * 100;
+  if (!Number.isFinite(open) || !Number.isFinite(close) || open <= 0) return null;
+  return ((close - open) / open) * 100;
+}
+
+function formatPercent(pct) {
+  if (!Number.isFinite(pct)) return "-";
   const sign = pct >= 0 ? "+" : "";
   return `${sign}${pct.toFixed(2)}%`;
+}
+
+function getSignalFromDelta(pct) {
+  if (!Number.isFinite(pct)) return { label: "No Data", className: "neutral" };
+  if (pct >= 2) return { label: "Strong Bull", className: "bull-strong" };
+  if (pct >= 0.4) return { label: "Bullish", className: "bull" };
+  if (pct <= -2) return { label: "Strong Bear", className: "bear-strong" };
+  if (pct <= -0.4) return { label: "Bearish", className: "bear" };
+  return { label: "Neutral", className: "neutral" };
+}
+
+function renderSignalPill(pct) {
+  const signal = getSignalFromDelta(pct);
+  return `<span class="signal-pill ${signal.className}">${signal.label}</span>`;
 }
 
 function getLinkedAccounts() {
@@ -525,35 +543,59 @@ function renderInvestmentsLoading() {
 function renderInvestmentsView() {
   const assets = Array.isArray(investmentsMarket.assets) ? investmentsMarket.assets : [];
   const top = assets.slice(0, 6);
+  const advancers = assets.filter((asset) => Number(getOpenDeltaPercent(asset) || 0) > 0).length;
+  const decliners = assets.filter((asset) => Number(getOpenDeltaPercent(asset) || 0) < 0).length;
+  const flats = Math.max(0, assets.length - advancers - decliners);
 
   const cardHtml = top
     .map(
-      (asset) => `
+      (asset) => {
+        const pct = getOpenDeltaPercent(asset);
+        const trendClass = !Number.isFinite(pct)
+          ? "value-flat"
+          : pct > 0
+            ? "value-up"
+            : pct < 0
+              ? "value-down"
+              : "value-flat";
+        return `
       <article class="schwab-metric-card">
         <h4>${asset.label}</h4>
         <div class="schwab-metric-value small">$${Number(asset.close || 0).toFixed(2)}</div>
-        <div class="settings-desc">O:${Number(asset.open || 0).toFixed(2)} H:${Number(asset.high || 0).toFixed(
+        <div class="settings-desc ${trendClass}">O:${Number(asset.open || 0).toFixed(2)} H:${Number(asset.high || 0).toFixed(
           2
-        )} L:${Number(asset.low || 0).toFixed(2)}</div>
+        )} L:${Number(asset.low || 0).toFixed(2)} · ${formatPercent(pct)}</div>
+        <div class="settings-desc">${renderSignalPill(pct)}</div>
       </article>
-    `
+    `;
+      }
     )
     .join("");
 
   const rows = assets
-    .map(
-      (asset) => `
+    .map((asset) => {
+      const pct = getOpenDeltaPercent(asset);
+      const trendClass = !Number.isFinite(pct)
+        ? "value-flat"
+        : pct > 0
+          ? "value-up"
+          : pct < 0
+            ? "value-down"
+            : "value-flat";
+      return `
       <tr>
-        <td>${asset.label}</td>
+        <td class="ticker-cell">${asset.label}</td>
         <td>${asset.symbol}</td>
         <td>$${Number(asset.close || 0).toFixed(2)}</td>
         <td>${Number(asset.open || 0).toFixed(2)}</td>
         <td>${Number(asset.high || 0).toFixed(2)}</td>
         <td>${Number(asset.low || 0).toFixed(2)}</td>
+        <td class="${trendClass}">${formatPercent(pct)}</td>
+        <td>${renderSignalPill(pct)}</td>
         <td>${Number(asset.volume || 0).toLocaleString()}</td>
       </tr>
-    `
-    )
+    `;
+    })
     .join("");
 
   workspaceTableWrap.innerHTML = `
@@ -561,6 +603,11 @@ function renderInvestmentsView() {
       <section class="agent-hero">
         <h3>Investments Dashboard</h3>
         <p>Public market dashboard powered by backend market feeds. Schwab account login is optional for this tab.</p>
+      </section>
+      <section class="schwab-metrics">
+        <article class="schwab-metric-card"><h4>Advancers</h4><div class="schwab-metric-value value-up">${advancers}</div></article>
+        <article class="schwab-metric-card"><h4>Decliners</h4><div class="schwab-metric-value value-down">${decliners}</div></article>
+        <article class="schwab-metric-card"><h4>Neutral</h4><div class="schwab-metric-value value-flat">${flats}</div></article>
       </section>
       <section class="schwab-metrics">${cardHtml}</section>
       <section class="table-wrap">
@@ -573,10 +620,12 @@ function renderInvestmentsView() {
               <th>Open</th>
               <th>High</th>
               <th>Low</th>
+              <th>Open Δ%</th>
+              <th>Signal</th>
               <th>Volume</th>
             </tr>
           </thead>
-          <tbody>${rows || '<tr><td colspan="7">No market data available.</td></tr>'}</tbody>
+          <tbody>${rows || '<tr><td colspan="9">No market data available.</td></tr>'}</tbody>
         </table>
       </section>
     </div>
@@ -1021,16 +1070,25 @@ function activateTab(tabName) {
               .map((symbol) => {
                 const quote = openingQuotesBySymbol[String(symbol).toUpperCase()];
                 if (!quote || quote.unavailable) {
-                  return `<tr><td>${symbol}</td><td colspan="5">Price unavailable</td></tr>`;
+                  return `<tr><td>${symbol}</td><td colspan="6">Price unavailable</td></tr>`;
                 }
+                const pct = getOpenDeltaPercent(quote);
+                const trendClass = !Number.isFinite(pct)
+                  ? "value-flat"
+                  : pct > 0
+                    ? "value-up"
+                    : pct < 0
+                      ? "value-down"
+                      : "value-flat";
                 return `
                   <tr>
-                    <td>${symbol}</td>
+                    <td class="ticker-cell">${symbol}</td>
                     <td>${renderPriceCell(quote.close)}</td>
                     <td>${renderPriceCell(quote.open)}</td>
                     <td>${renderPriceCell(quote.high)}</td>
                     <td>${renderPriceCell(quote.low)}</td>
-                    <td>${renderOpenDelta(quote)}</td>
+                    <td class="${trendClass}">${formatPercent(pct)}</td>
+                    <td>${renderSignalPill(pct)}</td>
                   </tr>
                 `;
               })
@@ -1049,9 +1107,10 @@ function activateTab(tabName) {
                         <th>High</th>
                         <th>Low</th>
                         <th>Open Δ%</th>
+                        <th>Signal</th>
                       </tr>
                     </thead>
-                    <tbody>${tickerRows || '<tr><td colspan="6">No tickers.</td></tr>'}</tbody>
+                    <tbody>${tickerRows || '<tr><td colspan="7">No tickers.</td></tr>'}</tbody>
                   </table>
                 </div>
               </article>

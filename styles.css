@@ -234,8 +234,69 @@ td {
   color: #d4e0f6;
 }
 
+.ticker-cell {
+  font-weight: 600;
+  color: #e8f1ff;
+}
+
 .up {
   color: #79d7a0;
+}
+
+.value-up {
+  color: #78dca5 !important;
+}
+
+.value-down {
+  color: #ff9cab !important;
+}
+
+.value-flat {
+  color: #c8d6f3 !important;
+}
+
+.signal-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid #3a4c6f;
+  color: #c4d3ef;
+  background: rgba(60, 80, 118, 0.25);
+}
+
+.signal-pill.bull-strong {
+  border-color: #1a9f5a;
+  color: #9bf0c1;
+  background: rgba(18, 112, 64, 0.3);
+}
+
+.signal-pill.bull {
+  border-color: #39a46d;
+  color: #88e6b2;
+  background: rgba(44, 122, 84, 0.25);
+}
+
+.signal-pill.bear-strong {
+  border-color: #c4586b;
+  color: #ffd0d9;
+  background: rgba(122, 45, 59, 0.3);
+}
+
+.signal-pill.bear {
+  border-color: #ab6778;
+  color: #ffc6d2;
+  background: rgba(112, 58, 73, 0.25);
+}
+
+.signal-pill.neutral {
+  border-color: #64789f;
+  color: #d2ddf5;
+  background: rgba(78, 96, 132, 0.25);
 }
 
 .do-loading,
@@ -625,6 +686,10 @@ td {
 
 .time-table td {
   color: #d9e6ff;
+}
+
+.time-table tbody tr:hover {
+  background: rgba(66, 92, 140, 0.12);
 }
 
 .agent-hero {
