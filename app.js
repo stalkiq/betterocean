@@ -13,6 +13,9 @@ const chatPanelBadge = document.getElementById("chatPanelBadge");
 const DO_API_BASE = "https://api.digitalocean.com";
 const TOKEN_KEY = "do_api_token";
 const API_CHAT_URL = "/api/chat/message";
+const HOME_TAB = "Assets";
+const RESPONSE_STYLE_PROMPT =
+  "Reply in 3-6 concise bullet points with short, scannable lines. Keep spacing clean and avoid long paragraphs.";
 
 const AGENTS = [
   {
@@ -128,8 +131,8 @@ const AGENTS = [
 const AGENT_BY_ID = Object.fromEntries(AGENTS.map((agent) => [agent.id, agent]));
 const AGENT_BY_TAB = Object.fromEntries(AGENTS.map((agent) => [agent.tab, agent]));
 
-const openTabs = new Set(["Assets"]);
-let currentTab = "Assets";
+const openTabs = new Set([HOME_TAB]);
+let currentTab = HOME_TAB;
 let currentAgentId = AGENTS[0].id;
 const announcedAgents = new Set();
 
@@ -178,10 +181,49 @@ function renderTabs(activeTab = "Assets") {
     const btn = document.createElement("button");
     btn.className = `top-tab ${tabName === activeTab ? "active" : ""}`;
     btn.dataset.tab = tabName;
-    btn.textContent = tabName;
+    const label = document.createElement("span");
+    label.className = "top-tab-label";
+    label.textContent = tabName;
+    btn.appendChild(label);
+
+    if (tabName !== HOME_TAB) {
+      const close = document.createElement("button");
+      close.type = "button";
+      close.className = "top-tab-close";
+      close.setAttribute("aria-label", `Close ${tabName}`);
+      close.textContent = "×";
+      close.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeTab(tabName);
+      });
+      btn.appendChild(close);
+    }
+
     btn.addEventListener("click", () => activateTab(tabName));
     topTabs.appendChild(btn);
   });
+}
+
+function closeTab(tabName) {
+  if (tabName === HOME_TAB || !openTabs.has(tabName)) return;
+  const tabs = [...openTabs];
+  const currentIndex = tabs.indexOf(tabName);
+  openTabs.delete(tabName);
+
+  if (currentTab === tabName) {
+    const remaining = [...openTabs];
+    if (!remaining.length) {
+      openTabs.add(HOME_TAB);
+      activateTab(HOME_TAB);
+      return;
+    }
+    const nextIndex = Math.max(0, currentIndex - 1);
+    const fallbackTab = remaining[nextIndex] || HOME_TAB;
+    activateTab(fallbackTab);
+    return;
+  }
+
+  renderTabs(currentTab);
 }
 
 function renderAssetsView() {
@@ -444,15 +486,61 @@ menuButtons.forEach((btn) => {
 function appendChatMessage(role, content, className = "") {
   const div = document.createElement("div");
   div.className = role === "user" ? "msg me" : "msg" + (className ? " " + className : "");
-  div.textContent = content;
+  if (role === "assistant" && !className) {
+    const bulletItems = normalizeToBullets(content);
+    if (bulletItems.length > 1) {
+      div.innerHTML = `
+        <ul class="msg-list">
+          ${bulletItems.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+        </ul>
+      `;
+    } else {
+      div.textContent = content;
+    }
+  } else {
+    div.textContent = content;
+  }
   chatLog.appendChild(div);
   chatLog.scrollTop = chatLog.scrollHeight;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function normalizeToBullets(text) {
+  const clean = String(text || "").replace(/\r/g, "").trim();
+  if (!clean) return [];
+
+  const lines = clean
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const explicitBullets = lines
+    .filter((line) => /^[-*•]\s+/.test(line) || /^\d+[\).\s]+/.test(line))
+    .map((line) => line.replace(/^[-*•]\s+/, "").replace(/^\d+[\).\s]+/, "").trim())
+    .filter(Boolean);
+  if (explicitBullets.length >= 2) return explicitBullets.slice(0, 6);
+
+  const sentenceBullets = clean
+    .split(/(?<=[.!?])\s+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 6);
+  return sentenceBullets;
 }
 
 async function sendToGradient(userContent) {
   const agent = getCurrentAgent();
   const messages = [
     { role: "system", content: agent.systemPrompt },
+    { role: "system", content: RESPONSE_STYLE_PROMPT },
     ...chatHistory,
     { role: "user", content: userContent },
   ];

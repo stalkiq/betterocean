@@ -123,21 +123,53 @@ body {
   gap: 6px;
   padding: 8px;
   border-bottom: 1px solid var(--line);
+  overflow-x: auto;
 }
 
 .top-tab {
-  border: 1px solid #314266;
+  border: 1px solid #2f3f61;
   color: #a8b9da;
-  background: #101b2f;
-  border-radius: 8px;
-  padding: 6px 10px;
+  background: linear-gradient(180deg, #1a2742, #101a2f);
+  border-radius: 10px 10px 0 0;
+  padding: 6px 8px 6px 10px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+  min-height: 32px;
+  max-width: 220px;
 }
 
 .top-tab.active {
   color: #fff;
-  border-color: #5474af;
-  background: #162640;
+  border-color: #6889c7;
+  background: linear-gradient(180deg, #22365a, #182947);
+}
+
+.top-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.top-tab-close {
+  border: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: transparent;
+  color: #9eb3d9;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+  font-size: 14px;
+  padding: 0;
+}
+
+.top-tab-close:hover {
+  background: rgba(132, 153, 196, 0.18);
+  color: #fff;
 }
 
 .workspace {
@@ -305,15 +337,16 @@ td {
   overflow: auto;
   flex: 1;
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .msg {
   border: 1px solid #243450;
   background: #10192b;
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 10px 12px;
   color: #bdd0f4;
+  line-height: 1.5;
 }
 
 .msg.me {
@@ -335,6 +368,17 @@ td {
   border-color: #6b3a3a;
   background: #1a1515;
   color: #e0a0a0;
+}
+
+.msg-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 6px;
+}
+
+.msg-list li {
+  margin: 0;
 }
 
 .settings-block-second {
