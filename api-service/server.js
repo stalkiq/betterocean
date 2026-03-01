@@ -18,9 +18,23 @@ const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toSt
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 7 * 24 * 60 * 60 * 1000);
 const MAX_ORDER_QTY = Number(process.env.SCHWAB_MAX_ORDER_QTY || 1000);
 const TICKER_UNIVERSE_TTL_MS = Number(process.env.TICKER_UNIVERSE_TTL_MS || 12 * 60 * 60 * 1000);
+const MARKET_OVERVIEW_TTL_MS = Number(process.env.MARKET_OVERVIEW_TTL_MS || 20 * 1000);
+const OPENING_PLAYBOOK_TTL_MS = Number(process.env.OPENING_PLAYBOOK_TTL_MS || 90 * 1000);
+const TICKER_REPORT_TTL_MS = Number(process.env.TICKER_REPORT_TTL_MS || 5 * 60 * 1000);
+const SCHWAB_CACHE_TTL_MS = Number(process.env.SCHWAB_CACHE_TTL_MS || 12 * 1000);
 
 const sessionStore = new Map();
 const tickerUniverseCache = { symbols: [], fetchedAt: 0 };
+const marketOverviewCache = { data: null, fetchedAt: 0 };
+const openingPlaybookCache = { data: null, fetchedAt: 0 };
+const tickerReportCache = new Map();
+const HTTPS_KEEPALIVE_AGENT = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 1500,
+  maxSockets: 100,
+  maxFreeSockets: 20,
+  timeout: 60000,
+});
 const FALLBACK_TICKER_UNIVERSE = [
   "AAPL",
   "MSFT",
@@ -181,6 +195,31 @@ function sendJson(res, statusCode, payload) {
   res.set(jsonHeaders()).status(statusCode).json(payload);
 }
 
+function getFreshCache(cacheEntry, ttlMs) {
+  if (!cacheEntry || !cacheEntry.data || !cacheEntry.fetchedAt) return null;
+  if (Date.now() - cacheEntry.fetchedAt > ttlMs) return null;
+  return cacheEntry.data;
+}
+
+function readSessionCache(session, key, ttlMs = SCHWAB_CACHE_TTL_MS) {
+  const entry = session?.cached?.[key];
+  if (!entry || !entry.fetchedAt) return null;
+  if (Date.now() - entry.fetchedAt > ttlMs) return null;
+  return entry.data;
+}
+
+function writeSessionCache(session, key, data) {
+  if (!session.cached || typeof session.cached !== "object") session.cached = {};
+  session.cached[key] = { fetchedAt: Date.now(), data };
+}
+
+function clearSessionCacheByPrefix(session, prefix) {
+  if (!session?.cached || typeof session.cached !== "object") return;
+  Object.keys(session.cached).forEach((key) => {
+    if (key.startsWith(prefix)) delete session.cached[key];
+  });
+}
+
 function postJson(url, requestBody, headers) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
@@ -193,6 +232,7 @@ function postJson(url, requestBody, headers) {
         port: parsedUrl.port || 443,
         path: `${parsedUrl.pathname}${parsedUrl.search}`,
         method: "POST",
+        agent: HTTPS_KEEPALIVE_AGENT,
         headers: {
           ...headers,
           "Content-Length": Buffer.byteLength(payload),
@@ -235,6 +275,7 @@ function getText(url) {
         port: parsedUrl.port || 443,
         path: `${parsedUrl.pathname}${parsedUrl.search}`,
         method: "GET",
+        agent: HTTPS_KEEPALIVE_AGENT,
       },
       (res) => {
         let raw = "";
@@ -692,6 +733,11 @@ app.get("/healthz", (_req, res) => {
 });
 
 app.get(["/market/overview", "/api/market/overview"], async (_req, res) => {
+  const cached = getFreshCache(marketOverviewCache, MARKET_OVERVIEW_TTL_MS);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
   const symbols = [
     { symbol: "spy.us", label: "S&P 500 ETF (SPY)" },
     { symbol: "qqq.us", label: "Nasdaq 100 ETF (QQQ)" },
@@ -708,11 +754,14 @@ app.get(["/market/overview", "/api/market/overview"], async (_req, res) => {
         )
       )
     ).filter(Boolean);
-    sendJson(res, 200, {
+    const payload = {
       source: "stooq",
       updatedAt: new Date().toISOString(),
       assets,
-    });
+    };
+    marketOverviewCache.data = payload;
+    marketOverviewCache.fetchedAt = Date.now();
+    sendJson(res, 200, payload);
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to load market overview data." });
   }
@@ -872,8 +921,15 @@ Rules:
 }
 
 app.get(["/market/opening-playbook", "/api/market/opening-playbook"], async (_req, res) => {
+  const cached = getFreshCache(openingPlaybookCache, OPENING_PLAYBOOK_TTL_MS);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
   try {
     const playbook = await buildOpeningPlaybook();
+    openingPlaybookCache.data = playbook;
+    openingPlaybookCache.fetchedAt = Date.now();
     sendJson(res, 200, playbook);
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to build opening playbook." });
@@ -916,8 +972,14 @@ app.get(["/market/ticker-report", "/api/market/ticker-report"], async (req, res)
     sendJson(res, 400, { error: "symbol query param is required." });
     return;
   }
+  const cached = tickerReportCache.get(symbol);
+  if (cached && Date.now() - cached.fetchedAt < TICKER_REPORT_TTL_MS) {
+    sendJson(res, 200, cached.data);
+    return;
+  }
   try {
     const report = await buildTickerDeepDiveReport(symbol);
+    tickerReportCache.set(symbol, { data: report, fetchedAt: Date.now() });
     sendJson(res, 200, report);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to build ticker report." });
@@ -1017,6 +1079,7 @@ app.post("/schwab/logout", (req, res) => {
   if (req.sessionId) {
     sessionStore.delete(req.sessionId);
   }
+  if (req.session) req.session.cached = {};
   clearSessionCookie(res);
   sendJson(res, 200, { ok: true });
 });
@@ -1025,15 +1088,25 @@ app.post("/api/schwab/logout", (req, res) => {
   if (req.sessionId) {
     sessionStore.delete(req.sessionId);
   }
+  if (req.session) req.session.cached = {};
   clearSessionCookie(res);
   sendJson(res, 200, { ok: true });
 });
 
 app.get(["/schwab/accounts", "/api/schwab/accounts"], requireSchwabAuth, async (req, res) => {
+  const cacheKey = "accounts:positions";
+  const cached = readSessionCache(req.session, cacheKey);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
   try {
     const result = await schwabRequestWithSession(req.session, "GET", "/accounts", {
       fields: "positions",
     });
+    if (result.status >= 200 && result.status < 300) {
+      writeSessionCache(req.session, cacheKey, result.data);
+    }
     sendJson(res, result.status, result.data);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to fetch Schwab accounts." });
@@ -1088,6 +1161,12 @@ app.get(["/schwab/orders/open", "/api/schwab/orders/open"], requireSchwabAuth, a
   const now = new Date();
   const from = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
   const to = now.toISOString();
+  const cacheKey = `orders-open:${String(accountHash)}:${String(req.query.maxResults || 50)}`;
+  const cached = readSessionCache(req.session, cacheKey, SCHWAB_CACHE_TTL_MS);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
   try {
     const result = await schwabRequestWithSession(
       req.session,
@@ -1102,7 +1181,11 @@ app.get(["/schwab/orders/open", "/api/schwab/orders/open"], requireSchwabAuth, a
     const orders = Array.isArray(result.data) ? result.data : result.data?.orders || [];
     const openStates = new Set(["WORKING", "QUEUED", "ACCEPTED", "NEW", "AWAITING_PARENT_ORDER"]);
     const openOrders = orders.filter((order) => openStates.has(String(order.status || "").toUpperCase()));
-    sendJson(res, result.status, { accountHash, orders: openOrders, rawCount: orders.length });
+    const payload = { accountHash, orders: openOrders, rawCount: orders.length };
+    if (result.status >= 200 && result.status < 300) {
+      writeSessionCache(req.session, cacheKey, payload);
+    }
+    sendJson(res, result.status, payload);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to fetch open orders." });
   }
@@ -1169,6 +1252,10 @@ app.post(["/schwab/orders", "/api/schwab/orders"], requireSchwabAuth, async (req
       null,
       order
     );
+    if (result.status >= 200 && result.status < 300) {
+      clearSessionCacheByPrefix(req.session, "orders-open:");
+      clearSessionCacheByPrefix(req.session, "accounts:");
+    }
     sendJson(res, result.status, { ok: result.status >= 200 && result.status < 300, result: result.data });
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to place order." });
@@ -1188,6 +1275,10 @@ app.delete(["/schwab/orders/:orderId", "/api/schwab/orders/:orderId"], requireSc
       "DELETE",
       `/accounts/${encodeURIComponent(String(accountHash))}/orders/${encodeURIComponent(String(orderId))}`
     );
+    if (result.status >= 200 && result.status < 300) {
+      clearSessionCacheByPrefix(req.session, "orders-open:");
+      clearSessionCacheByPrefix(req.session, "accounts:");
+    }
     sendJson(res, result.status, { ok: result.status >= 200 && result.status < 300, result: result.data });
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to cancel order." });

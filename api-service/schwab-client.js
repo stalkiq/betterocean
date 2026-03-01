@@ -8,6 +8,13 @@ const TRADER_BASE_URL =
   process.env.SCHWAB_TRADER_BASE_URL || "https://api.schwabapi.com/trader/v1";
 const MARKETDATA_BASE_URL =
   process.env.SCHWAB_MARKETDATA_BASE_URL || "https://api.schwabapi.com/marketdata/v1";
+const SCHWAB_HTTPS_KEEPALIVE_AGENT = new https.Agent({
+  keepAlive: true,
+  keepAliveMsecs: 1500,
+  maxSockets: 80,
+  maxFreeSockets: 16,
+  timeout: 60000,
+});
 
 function requestJson(method, url, headers = {}, body = null) {
   return new Promise((resolve, reject) => {
@@ -22,6 +29,7 @@ function requestJson(method, url, headers = {}, body = null) {
         port: parsed.port || 443,
         path: `${parsed.pathname}${parsed.search}`,
         method,
+        agent: SCHWAB_HTTPS_KEEPALIVE_AGENT,
         headers: {
           ...headers,
           ...(payload ? { "Content-Length": Buffer.byteLength(payload) } : {}),

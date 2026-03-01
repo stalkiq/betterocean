@@ -1,6 +1,7 @@
 const topTabs = document.getElementById("topTabs");
 const railButtons = [...document.querySelectorAll(".rail-btn")];
 const menuButtons = [...document.querySelectorAll(".menu-item")];
+const appShell = document.querySelector(".app-shell");
 const titleEl = document.getElementById("workspaceTitle");
 const subEl = document.getElementById("workspaceSub");
 const chatForm = document.getElementById("chatForm");
@@ -9,6 +10,7 @@ const chatLog = document.getElementById("chatLog");
 const workspaceTableWrap = document.getElementById("workspaceTableWrap");
 const chatPanelTitle = document.getElementById("chatPanelTitle");
 const chatPanelBadge = document.getElementById("chatPanelBadge");
+const workspaceRefreshBtn = document.getElementById("workspaceRefreshBtn");
 
 const DO_API_BASE = "https://api.digitalocean.com";
 const TOKEN_KEY = "do_api_token";
@@ -20,6 +22,10 @@ const TIME_TAB = "Time";
 const HOME_TAB = SCHWAB_CONNECT_TAB;
 const RESPONSE_STYLE_PROMPT =
   "Reply in 3-6 concise bullet points with short, scannable lines. Keep spacing clean and avoid long paragraphs.";
+const UI_PREFS_KEY = "bo_ui_prefs_v1";
+const MARKET_TAB_TTL_MS = 90 * 1000;
+const TICKER_REPORT_TTL_MS = 5 * 60 * 1000;
+const TICKER_QUOTES_TTL_MS = 2 * 60 * 1000;
 
 const AGENTS = [
   {
@@ -109,8 +115,16 @@ let tickerIntelState = {
   signalFilter: "all",
   priceFilter: "all",
   search: "",
+  reportCache: {},
+  reportCacheAt: {},
+  quotesUpdatedAt: 0,
 };
 let marketCountdownTimer = null;
+let tickerUniverseQuotesPromise = null;
+let tickerUniverseRequestId = 0;
+let tickerReportRequestId = 0;
+let investmentsLoadedAt = 0;
+let openingPlaybookLoadedAt = 0;
 
 function getDoToken() {
   return sessionStorage.getItem(TOKEN_KEY) || "";
@@ -119,6 +133,31 @@ function getDoToken() {
 function setDoToken(token) {
   if (token) sessionStorage.setItem(TOKEN_KEY, token);
   else sessionStorage.removeItem(TOKEN_KEY);
+}
+
+function readUiPrefs() {
+  try {
+    const raw = localStorage.getItem(UI_PREFS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeUiPrefs(next) {
+  const current = readUiPrefs();
+  localStorage.setItem(UI_PREFS_KEY, JSON.stringify({ ...current, ...next }));
+}
+
+function applyLayoutPrefs() {
+  if (!appShell) return;
+  const prefs = readUiPrefs();
+  appShell.classList.toggle("left-collapsed", Boolean(prefs.leftCollapsed));
+  appShell.classList.toggle("chat-collapsed", Boolean(prefs.chatCollapsed));
+  const leftToggle = document.getElementById("toggleLeftPanelBtn");
+  const chatToggle = document.getElementById("toggleChatPanelBtn");
+  if (leftToggle) leftToggle.textContent = prefs.leftCollapsed ? "Show Left" : "Hide Left";
+  if (chatToggle) chatToggle.textContent = prefs.chatCollapsed ? "Show Chat" : "Hide Chat";
 }
 
 async function doApi(path, token) {
@@ -194,14 +233,34 @@ async function loadTickerIntelReport(symbol) {
     .trim()
     .toUpperCase();
   if (!safeSymbol) throw new Error("Ticker symbol is required.");
+
+  const cachedReport = tickerIntelState.reportCache[safeSymbol];
+  const cachedAt = Number(tickerIntelState.reportCacheAt[safeSymbol] || 0);
+  if (cachedReport && Date.now() - cachedAt < TICKER_REPORT_TTL_MS) {
+    tickerIntelState = {
+      ...tickerIntelState,
+      selected: safeSymbol,
+      loading: false,
+      report: cachedReport,
+      error: "",
+    };
+    return cachedReport;
+  }
+
+  const reqId = ++tickerReportRequestId;
   const data = await schwabApi(`/api/market/ticker-report?symbol=${encodeURIComponent(safeSymbol)}`, {
     method: "GET",
   });
+  if (reqId !== tickerReportRequestId) return data;
+
   tickerIntelState = {
+    ...tickerIntelState,
     selected: safeSymbol,
     loading: false,
     report: data,
     error: "",
+    reportCache: { ...tickerIntelState.reportCache, [safeSymbol]: data },
+    reportCacheAt: { ...tickerIntelState.reportCacheAt, [safeSymbol]: Date.now() },
   };
   return data;
 }
@@ -218,6 +277,7 @@ async function loadTickerUniverse(limit = 500) {
     universe: symbols.length ? symbols : DEFAULT_TICKER_WATCHLIST,
     universeSource: data.source || "unknown",
     loadingUniverse: false,
+    selected: symbols.includes(tickerIntelState.selected) ? tickerIntelState.selected : symbols[0] || "AAPL",
   };
   return tickerIntelState.universe;
 }
@@ -232,43 +292,84 @@ function getPriceBucket(quote) {
 }
 
 function getSignalKeyForQuote(quote) {
+  if (!quote || quote.unavailable) return "no-data";
   const pct = getOpenDeltaPercent(quote);
-  if (!Number.isFinite(pct)) return "neutral";
+  if (!Number.isFinite(pct)) return "no-data";
   if (pct >= 0.4) return "bullish";
   if (pct <= -0.4) return "bearish";
   return "neutral";
 }
 
-async function refreshTickerUniverseQuotes({ rerender = true } = {}) {
-  const symbols = tickerIntelState.universe.length ? tickerIntelState.universe : DEFAULT_TICKER_WATCHLIST;
-  const chunkSize = 50;
-  const bySymbol = {};
-  let loaded = 0;
-
-  tickerIntelState = { ...tickerIntelState, loadingUniverse: true, loadedQuotes: 0, quoteBySymbol: {} };
-  if (rerender && currentTab === TICKER_INTEL_TAB) renderTickerIntelLoading();
-
-  for (let i = 0; i < symbols.length; i += chunkSize) {
-    const chunk = symbols.slice(i, i + chunkSize);
-    try {
-      const data = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(chunk.join(","))}`, {
-        method: "GET",
-      });
-      const quotes = Array.isArray(data.quotes) ? data.quotes : [];
-      quotes.forEach((q) => {
-        const key = String(q?.label || q?.symbol || "").toUpperCase();
-        if (key) bySymbol[key] = q;
-      });
-    } catch {
-      // Keep going even if a chunk fails.
-    }
-    loaded = Math.min(symbols.length, i + chunk.length);
-    tickerIntelState = { ...tickerIntelState, quoteBySymbol: { ...bySymbol }, loadedQuotes: loaded };
-    if (rerender && currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+async function refreshTickerUniverseQuotes({ rerender = true, force = false } = {}) {
+  if (tickerUniverseQuotesPromise && !force) {
+    return tickerUniverseQuotesPromise;
   }
 
-  tickerIntelState = { ...tickerIntelState, quoteBySymbol: bySymbol, loadedQuotes: loaded, loadingUniverse: false };
-  return bySymbol;
+  const symbols = tickerIntelState.universe.length ? tickerIntelState.universe : DEFAULT_TICKER_WATCHLIST;
+  const chunkSize = 50;
+  const requestId = ++tickerUniverseRequestId;
+  const chunks = [];
+  for (let i = 0; i < symbols.length; i += chunkSize) chunks.push(symbols.slice(i, i + chunkSize));
+  const bySymbol = force ? {} : { ...tickerIntelState.quoteBySymbol };
+  let loaded = force ? 0 : Number(tickerIntelState.loadedQuotes || 0);
+  const concurrency = 4;
+
+  const run = (async () => {
+    tickerIntelState = {
+      ...tickerIntelState,
+      loadingUniverse: true,
+      loadedQuotes: force ? 0 : loaded,
+      quoteBySymbol: force ? {} : bySymbol,
+    };
+    if (rerender && currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+
+    let nextIndex = 0;
+    async function worker() {
+      while (true) {
+        const index = nextIndex;
+        nextIndex += 1;
+        if (index >= chunks.length) return;
+        const chunk = chunks[index];
+        try {
+          const data = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(chunk.join(","))}`, {
+            method: "GET",
+          });
+          const quotes = Array.isArray(data.quotes) ? data.quotes : [];
+          quotes.forEach((q) => {
+            const key = String(q?.label || q?.symbol || "").toUpperCase();
+            if (key) bySymbol[key] = q;
+          });
+        } catch {
+          // Keep going even if a chunk fails.
+        }
+        loaded = Math.min(symbols.length, loaded + chunk.length);
+        if (requestId !== tickerUniverseRequestId) return;
+        tickerIntelState = { ...tickerIntelState, quoteBySymbol: { ...bySymbol }, loadedQuotes: loaded };
+        if (rerender && currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+      }
+    }
+
+    await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, () => worker()));
+
+    if (requestId !== tickerUniverseRequestId) return bySymbol;
+
+    tickerIntelState = {
+      ...tickerIntelState,
+      quoteBySymbol: bySymbol,
+      loadedQuotes: loaded,
+      loadingUniverse: false,
+      quotesUpdatedAt: Date.now(),
+    };
+    if (rerender && currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+    return bySymbol;
+  })();
+
+  tickerUniverseQuotesPromise = run.finally(() => {
+    if (tickerUniverseQuotesPromise === run) {
+      tickerUniverseQuotesPromise = null;
+    }
+  });
+  return tickerUniverseQuotesPromise;
 }
 
 async function loadPublicQuotes(symbols) {
@@ -430,6 +531,26 @@ function getFilteredTickerUniverse() {
   });
 }
 
+function getTickerFilterCounts() {
+  const search = String(tickerIntelState.search || "")
+    .trim()
+    .toUpperCase();
+  const symbols = tickerIntelState.universe.length ? tickerIntelState.universe : DEFAULT_TICKER_WATCHLIST;
+  const scoped = symbols.filter((symbol) => !search || symbol.includes(search));
+  const signal = { bullish: 0, bearish: 0, neutral: 0, "no-data": 0 };
+  const price = { under20: 0, "20to100": 0, "100to500": 0, "500plus": 0, unknown: 0 };
+
+  scoped.forEach((symbol) => {
+    const quote = tickerIntelState.quoteBySymbol[symbol];
+    const sig = getSignalKeyForQuote(quote);
+    signal[sig] = (signal[sig] || 0) + 1;
+    const bucket = getPriceBucket(quote);
+    price[bucket] = (price[bucket] || 0) + 1;
+  });
+
+  return { total: scoped.length, signal, price };
+}
+
 function renderTickerIntelLoading() {
   tickerIntelState = { ...tickerIntelState, loading: true };
   renderTickerIntelView();
@@ -439,6 +560,7 @@ function renderTickerIntelView() {
   const selected = tickerIntelState.selected || DEFAULT_TICKER_WATCHLIST[0];
   const report = tickerIntelState.report;
   const filtered = getFilteredTickerUniverse();
+  const counts = getTickerFilterCounts();
   const totalUniverse = tickerIntelState.universe.length || DEFAULT_TICKER_WATCHLIST.length;
   const watchlistHtml = filtered
     .map((symbol) => {
@@ -547,23 +669,27 @@ function renderTickerIntelView() {
         <h4>Tickers Universe</h4>
         <p class="settings-desc">Showing ${filtered.length}/${totalUniverse} symbols • quotes loaded ${
           tickerIntelState.loadedQuotes
-        }/${totalUniverse} • source: ${escapeHtml(tickerIntelState.universeSource || "unknown")}</p>
+        }/${totalUniverse}${tickerIntelState.loadingUniverse ? " (updating...)" : ""} • source: ${escapeHtml(
+          tickerIntelState.universeSource || "unknown"
+        )}</p>
         <div class="ticker-filters">
           <input id="tickerSearchInput" class="trade-input" placeholder="Search symbol (e.g. AAPL)" value="${escapeHtml(
             tickerIntelState.search || ""
           )}" />
           <select id="tickerSignalFilter" class="trade-input">
-            <option value="all" ${tickerIntelState.signalFilter === "all" ? "selected" : ""}>All Signals</option>
-            <option value="bullish" ${tickerIntelState.signalFilter === "bullish" ? "selected" : ""}>Bullish</option>
-            <option value="bearish" ${tickerIntelState.signalFilter === "bearish" ? "selected" : ""}>Bearish</option>
-            <option value="neutral" ${tickerIntelState.signalFilter === "neutral" ? "selected" : ""}>Neutral</option>
+            <option value="all" ${tickerIntelState.signalFilter === "all" ? "selected" : ""}>All Signals (${counts.total})</option>
+            <option value="bullish" ${tickerIntelState.signalFilter === "bullish" ? "selected" : ""}>Bullish (${counts.signal.bullish})</option>
+            <option value="bearish" ${tickerIntelState.signalFilter === "bearish" ? "selected" : ""}>Bearish (${counts.signal.bearish})</option>
+            <option value="neutral" ${tickerIntelState.signalFilter === "neutral" ? "selected" : ""}>Neutral (${counts.signal.neutral})</option>
+            <option value="no-data" ${tickerIntelState.signalFilter === "no-data" ? "selected" : ""}>No Data (${counts.signal["no-data"]})</option>
           </select>
           <select id="tickerPriceFilter" class="trade-input">
-            <option value="all" ${tickerIntelState.priceFilter === "all" ? "selected" : ""}>All Prices</option>
-            <option value="under20" ${tickerIntelState.priceFilter === "under20" ? "selected" : ""}>Under $20</option>
-            <option value="20to100" ${tickerIntelState.priceFilter === "20to100" ? "selected" : ""}>$20 - $100</option>
-            <option value="100to500" ${tickerIntelState.priceFilter === "100to500" ? "selected" : ""}>$100 - $500</option>
-            <option value="500plus" ${tickerIntelState.priceFilter === "500plus" ? "selected" : ""}>$500+</option>
+            <option value="all" ${tickerIntelState.priceFilter === "all" ? "selected" : ""}>All Prices (${counts.total})</option>
+            <option value="under20" ${tickerIntelState.priceFilter === "under20" ? "selected" : ""}>Under $20 (${counts.price.under20})</option>
+            <option value="20to100" ${tickerIntelState.priceFilter === "20to100" ? "selected" : ""}>$20 - $100 (${counts.price["20to100"]})</option>
+            <option value="100to500" ${tickerIntelState.priceFilter === "100to500" ? "selected" : ""}>$100 - $500 (${counts.price["100to500"]})</option>
+            <option value="500plus" ${tickerIntelState.priceFilter === "500plus" ? "selected" : ""}>$500+ (${counts.price["500plus"]})</option>
+            <option value="unknown" ${tickerIntelState.priceFilter === "unknown" ? "selected" : ""}>No Price (${counts.price.unknown})</option>
           </select>
           <button type="button" class="schwab-btn schwab-btn-ghost" id="refreshTickerUniverseBtn">Refresh 500 Quotes</button>
         </div>
@@ -602,9 +728,12 @@ function wireTickerIntelEvents() {
   const refreshBtn = document.getElementById("refreshTickerUniverseBtn");
   if (refreshBtn) {
     refreshBtn.addEventListener("click", () => {
-      refreshTickerUniverseQuotes({ rerender: true }).catch(() => {
-        if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
-      });
+      loadTickerUniverse(500)
+        .catch(() => tickerIntelState.universe)
+        .then(() => refreshTickerUniverseQuotes({ rerender: true, force: true }))
+        .catch(() => {
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        });
     });
   }
   workspaceTableWrap.querySelectorAll(".ticker-item").forEach((btn) => {
@@ -1382,14 +1511,25 @@ function activateTab(tabName) {
     return;
   }
   if (tabName === INVESTMENTS_TAB) {
-    renderInvestmentsLoading();
-    loadInvestmentsMarketData()
-      .then(() => renderInvestmentsView())
-      .catch((error) => {
-        workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
-          error.message || "Failed to load market data."
-        }</p></div>`;
-      });
+    const hasFreshInvestments =
+      Array.isArray(investmentsMarket.assets) &&
+      investmentsMarket.assets.length > 0 &&
+      Date.now() - investmentsLoadedAt < MARKET_TAB_TTL_MS;
+    if (hasFreshInvestments) {
+      renderInvestmentsView();
+    } else {
+      renderInvestmentsLoading();
+      loadInvestmentsMarketData()
+        .then(() => {
+          investmentsLoadedAt = Date.now();
+          renderInvestmentsView();
+        })
+        .catch((error) => {
+          workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
+            error.message || "Failed to load market data."
+          }</p></div>`;
+        });
+    }
     return;
   }
   if (tabName === TICKER_INTEL_TAB) {
@@ -1399,8 +1539,18 @@ function activateTab(tabName) {
         ? Promise.resolve(tickerIntelState.universe)
         : loadTickerUniverse(500).catch(() => DEFAULT_TICKER_WATCHLIST);
     universePromise
-      .then(() => refreshTickerUniverseQuotes({ rerender: true }).catch(() => ({})))
-      .then(() => loadTickerIntelReport(tickerIntelState.selected || tickerIntelState.universe[0] || "AAPL"))
+      .then(() => {
+        renderTickerIntelView();
+        const needsFreshQuotes =
+          !tickerIntelState.quotesUpdatedAt || Date.now() - tickerIntelState.quotesUpdatedAt > TICKER_QUOTES_TTL_MS;
+        if (needsFreshQuotes) {
+          refreshTickerUniverseQuotes({ rerender: true }).catch(() => ({}));
+        }
+        const nextSymbol = tickerIntelState.universe.includes(tickerIntelState.selected)
+          ? tickerIntelState.selected
+          : tickerIntelState.universe[0] || "AAPL";
+        return loadTickerIntelReport(nextSymbol);
+      })
       .then(() => renderTickerIntelView())
       .catch((error) => {
         tickerIntelState = {
@@ -1417,6 +1567,7 @@ function activateTab(tabName) {
     workspaceTableWrap.innerHTML = '<div class="do-loading">Building opening bell playbook...</div>';
     loadOpeningPlaybook()
       .then(async () => {
+        openingPlaybookLoadedAt = Date.now();
         const symbols = openingPlaybook.buckets.flatMap((bucket) =>
           Array.isArray(bucket.tickers) ? bucket.tickers : []
         );
@@ -1560,7 +1711,19 @@ function activateTab(tabName) {
   `;
 }
 
-document.querySelector(".refresh-btn").addEventListener("click", () => {
+document.getElementById("toggleLeftPanelBtn")?.addEventListener("click", () => {
+  const prefs = readUiPrefs();
+  writeUiPrefs({ leftCollapsed: !prefs.leftCollapsed });
+  applyLayoutPrefs();
+});
+
+document.getElementById("toggleChatPanelBtn")?.addEventListener("click", () => {
+  const prefs = readUiPrefs();
+  writeUiPrefs({ chatCollapsed: !prefs.chatCollapsed });
+  applyLayoutPrefs();
+});
+
+workspaceRefreshBtn?.addEventListener("click", () => {
   if (currentTab === SCHWAB_CONNECT_TAB) {
     refreshSchwabSession().then(() => {
       if (schwabSession.connected) {
@@ -1574,7 +1737,10 @@ document.querySelector(".refresh-btn").addEventListener("click", () => {
   if (currentTab === INVESTMENTS_TAB) {
     renderInvestmentsLoading();
     loadInvestmentsMarketData()
-      .then(() => renderInvestmentsView())
+      .then(() => {
+        investmentsLoadedAt = Date.now();
+        renderInvestmentsView();
+      })
       .catch((error) => {
         workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
           error.message || "Failed to load market data."
@@ -1583,7 +1749,18 @@ document.querySelector(".refresh-btn").addEventListener("click", () => {
     return;
   }
   if (currentTab === TICKER_INTEL_TAB) {
-    activateTab(TICKER_INTEL_TAB);
+    const universePromise =
+      tickerIntelState.universe.length >= 50
+        ? Promise.resolve(tickerIntelState.universe)
+        : loadTickerUniverse(500).catch(() => DEFAULT_TICKER_WATCHLIST);
+    universePromise
+      .then(() => refreshTickerUniverseQuotes({ rerender: true, force: true }))
+      .then(() => loadTickerIntelReport(tickerIntelState.selected || "AAPL"))
+      .then(() => renderTickerIntelView())
+      .catch((error) => {
+        tickerIntelState = { ...tickerIntelState, loading: false, error: error.message || "Refresh failed." };
+        renderTickerIntelView();
+      });
     return;
   }
   if (currentTab === TIME_TAB) {
@@ -1762,6 +1939,7 @@ async function initApp() {
   const params = new URLSearchParams(window.location.search);
   const schwabFlag = params.get("schwab");
   const schwabReason = params.get("reason");
+  applyLayoutPrefs();
 
   await refreshSchwabSession();
   if (schwabSession.connected) {

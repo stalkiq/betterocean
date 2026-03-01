@@ -22,9 +22,19 @@ body {
 .app-shell {
   height: 100vh;
   display: grid;
-  grid-template-columns: 56px 220px 1fr 290px;
+  --left-panel-width: 220px;
+  --chat-panel-width: 290px;
+  grid-template-columns: 56px var(--left-panel-width) 1fr var(--chat-panel-width);
   gap: 8px;
   padding: 8px;
+}
+
+.app-shell.left-collapsed {
+  --left-panel-width: 0px;
+}
+
+.app-shell.chat-collapsed {
+  --chat-panel-width: 0px;
 }
 
 .icon-rail,
@@ -74,6 +84,15 @@ body {
 
 .left-panel {
   padding: 14px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.app-shell.left-collapsed .left-panel {
+  border-width: 0;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .logo {
@@ -184,6 +203,12 @@ body {
   margin-bottom: 10px;
 }
 
+.workspace-actions {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .workspace-head h2 {
   margin: 0;
   font-size: 30px;
@@ -203,6 +228,11 @@ body {
   padding: 7px 12px;
   box-shadow: 0 0 0 1px rgba(209, 213, 219, 0.2), 0 0 9px rgba(209, 213, 219, 0.15);
   cursor: pointer;
+}
+
+.workspace-toggle-btn {
+  padding: 7px 10px;
+  font-size: 12px;
 }
 
 .table-wrap {
@@ -377,6 +407,13 @@ td {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-width: 0;
+}
+
+.app-shell.chat-collapsed .chat-panel {
+  border-width: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .chat-panel header,
@@ -961,7 +998,8 @@ td {
 
 @media (max-width: 1200px) {
   .app-shell {
-    grid-template-columns: 56px 200px 1fr;
+    --left-panel-width: 200px;
+    --chat-panel-width: 0px;
   }
 
   .chat-panel {
