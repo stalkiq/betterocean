@@ -385,31 +385,63 @@ function renderAgentView(agent) {
 }
 
 function renderSchwabConnectView() {
+  const isConnected = Boolean(schwabSession.connected);
+  const accountCount = schwabSession.accountCount || 0;
+  const primaryAccount = schwabSession.accountNumber || "-";
+  const connectedAt = schwabSession.connectedAt
+    ? new Date(schwabSession.connectedAt).toLocaleString()
+    : "Not connected";
+
   workspaceTableWrap.innerHTML = `
-    <div class="agent-view">
-      <section class="agent-hero">
-        <h3>Connect Charles Schwab</h3>
-        <p>Sign in with your Charles Schwab account to use BetterOcean features, including account context, quotes, positions, and trading actions.</p>
+    <div class="schwab-view">
+      <section class="schwab-hero">
+        <div class="schwab-hero-copy">
+          <h3>Connect Charles Schwab</h3>
+          <p>Securely link your brokerage account to unlock live balances, positions, open orders, and trading actions directly in BetterOcean.</p>
+        </div>
+        <span class="schwab-status-pill ${isConnected ? "connected" : "offline"}">
+          ${isConnected ? "Connected" : "Not Connected"}
+        </span>
       </section>
-      <section class="agent-grid">
-        <article class="agent-card">
-          <h4>Status</h4>
-          <ul class="agent-list">
-            <li>Connected: ${schwabSession.connected ? "Yes" : "No"}</li>
-            <li>Accounts detected: ${schwabSession.accountCount || 0}</li>
-            <li>Primary account: ${schwabSession.accountNumber || "-"}</li>
-          </ul>
+
+      <section class="schwab-metrics">
+        <article class="schwab-metric-card">
+          <h4>Linked accounts</h4>
+          <div class="schwab-metric-value">${accountCount}</div>
         </article>
-        <article class="agent-card">
-          <h4>Actions</h4>
-          <div class="prompt-list">
-            <button type="button" class="prompt-btn" id="schwabConnectBtn">Connect Schwab</button>
+        <article class="schwab-metric-card">
+          <h4>Primary account</h4>
+          <div class="schwab-metric-value small">${primaryAccount}</div>
+        </article>
+        <article class="schwab-metric-card">
+          <h4>Last connected</h4>
+          <div class="schwab-metric-value small">${connectedAt}</div>
+        </article>
+      </section>
+
+      <section class="schwab-grid">
+        <article class="schwab-card">
+          <h4>Connection Actions</h4>
+          <p class="schwab-card-sub">Use secure OAuth to connect your Schwab identity to this session.</p>
+          <div class="schwab-actions">
+            <button type="button" class="schwab-btn schwab-btn-primary" id="schwabConnectBtn">
+              ${isConnected ? "Reconnect Schwab" : "Connect Schwab"}
+            </button>
             ${
-              schwabSession.connected
-                ? '<button type="button" class="prompt-btn" id="schwabDisconnectBtn">Disconnect</button>'
+              isConnected
+                ? '<button type="button" class="schwab-btn schwab-btn-ghost" id="schwabDisconnectBtn">Disconnect</button>'
                 : ""
             }
           </div>
+        </article>
+
+        <article class="schwab-card">
+          <h4>What You Unlock</h4>
+          <ul class="schwab-list">
+            <li>Live account and position context across all agent tabs.</li>
+            <li>Quote lookups and open order monitoring in real time.</li>
+            <li>Guardrailed order placement and cancellation via backend APIs.</li>
+          </ul>
         </article>
       </section>
     </div>
