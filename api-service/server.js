@@ -64,8 +64,12 @@ function readMessages(req) {
   return null;
 }
 
-app.options("*", (_req, res) => {
-  res.set(jsonHeaders()).status(204).send();
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    res.set(jsonHeaders()).status(204).send();
+    return;
+  }
+  next();
 });
 
 app.get("/healthz", (_req, res) => {
