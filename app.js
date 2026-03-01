@@ -14,6 +14,7 @@ const DO_API_BASE = "https://api.digitalocean.com";
 const TOKEN_KEY = "do_api_token";
 const API_CHAT_URL = "/api/chat/message";
 const SCHWAB_CONNECT_TAB = "Schwab Connect";
+const INVESTMENTS_TAB = "Investments";
 const HOME_TAB = SCHWAB_CONNECT_TAB;
 const RESPONSE_STYLE_PROMPT =
   "Reply in 3-6 concise bullet points with short, scannable lines. Keep spacing clean and avoid long paragraphs.";
@@ -81,7 +82,7 @@ const AGENTS = [
 const AGENT_BY_ID = Object.fromEntries(AGENTS.map((agent) => [agent.id, agent]));
 const AGENT_BY_TAB = Object.fromEntries(AGENTS.map((agent) => [agent.tab, agent]));
 
-const openTabs = new Set([HOME_TAB]);
+const openTabs = new Set([HOME_TAB, INVESTMENTS_TAB]);
 let currentTab = HOME_TAB;
 let currentAgentId = AGENTS[0].id;
 const announcedAgents = new Set();
@@ -89,6 +90,7 @@ const announcedAgents = new Set();
 let chatHistory = [];
 let schwabSession = { connected: false };
 let schwabData = { accounts: null, openOrders: null };
+let investmentsMarket = { assets: [], updatedAt: null };
 
 function getDoToken() {
   return sessionStorage.getItem(TOKEN_KEY) || "";
@@ -145,6 +147,15 @@ async function loadSchwabContextData() {
   } catch {
     schwabData = { accounts: null, openOrders: null };
   }
+}
+
+async function loadInvestmentsMarketData() {
+  const data = await schwabApi("/api/market/overview", { method: "GET" });
+  investmentsMarket = {
+    assets: Array.isArray(data.assets) ? data.assets : [],
+    updatedAt: data.updatedAt || null,
+  };
+  return investmentsMarket;
 }
 
 function getLinkedAccounts() {
@@ -334,7 +345,7 @@ function renderTabs(activeTab = HOME_TAB) {
 }
 
 function closeTab(tabName) {
-  if (tabName === HOME_TAB || !openTabs.has(tabName)) return;
+  if (tabName === HOME_TAB || tabName === INVESTMENTS_TAB || !openTabs.has(tabName)) return;
   const tabs = [...openTabs];
   const currentIndex = tabs.indexOf(tabName);
   openTabs.delete(tabName);
@@ -377,6 +388,71 @@ function renderAssetsView() {
         <tr><td>Natural Gas (NG.F)</td><td>2.859</td><td class="up">+0.95%</td><td>2.832</td><td>2.894</td><td>2.818</td><td>—</td></tr>
       </tbody>
     </table>
+  `;
+}
+
+function renderInvestmentsLoading() {
+  workspaceTableWrap.innerHTML = '<div class="do-loading">Loading market data...</div>';
+}
+
+function renderInvestmentsView() {
+  const assets = Array.isArray(investmentsMarket.assets) ? investmentsMarket.assets : [];
+  const top = assets.slice(0, 6);
+
+  const cardHtml = top
+    .map(
+      (asset) => `
+      <article class="schwab-metric-card">
+        <h4>${asset.label}</h4>
+        <div class="schwab-metric-value small">$${Number(asset.close || 0).toFixed(2)}</div>
+        <div class="settings-desc">O:${Number(asset.open || 0).toFixed(2)} H:${Number(asset.high || 0).toFixed(
+          2
+        )} L:${Number(asset.low || 0).toFixed(2)}</div>
+      </article>
+    `
+    )
+    .join("");
+
+  const rows = assets
+    .map(
+      (asset) => `
+      <tr>
+        <td>${asset.label}</td>
+        <td>${asset.symbol}</td>
+        <td>$${Number(asset.close || 0).toFixed(2)}</td>
+        <td>${Number(asset.open || 0).toFixed(2)}</td>
+        <td>${Number(asset.high || 0).toFixed(2)}</td>
+        <td>${Number(asset.low || 0).toFixed(2)}</td>
+        <td>${Number(asset.volume || 0).toLocaleString()}</td>
+      </tr>
+    `
+    )
+    .join("");
+
+  workspaceTableWrap.innerHTML = `
+    <div class="agent-view">
+      <section class="agent-hero">
+        <h3>Investments Dashboard</h3>
+        <p>Public market dashboard powered by backend market feeds. Schwab account login is optional for this tab.</p>
+      </section>
+      <section class="schwab-metrics">${cardHtml}</section>
+      <section class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Instrument</th>
+              <th>Symbol</th>
+              <th>Last</th>
+              <th>Open</th>
+              <th>High</th>
+              <th>Low</th>
+              <th>Volume</th>
+            </tr>
+          </thead>
+          <tbody>${rows || '<tr><td colspan="7">No market data available.</td></tr>'}</tbody>
+        </table>
+      </section>
+    </div>
   `;
 }
 
@@ -750,7 +826,12 @@ function activateTab(tabName) {
   if (tabName === "Assets") {
     tabName = SCHWAB_CONNECT_TAB;
   }
-  if (!schwabSession.connected && tabName !== SCHWAB_CONNECT_TAB && tabName !== "Settings") {
+  if (
+    !schwabSession.connected &&
+    tabName !== SCHWAB_CONNECT_TAB &&
+    tabName !== "Settings" &&
+    tabName !== INVESTMENTS_TAB
+  ) {
     openTabs.add(SCHWAB_CONNECT_TAB);
     currentTab = SCHWAB_CONNECT_TAB;
     titleEl.textContent = SCHWAB_CONNECT_TAB;
@@ -768,6 +849,8 @@ function activateTab(tabName) {
     ? agent.subtitle
     : tabName === SCHWAB_CONNECT_TAB
       ? "Schwab OAuth required"
+      : tabName === INVESTMENTS_TAB
+        ? "Public market dashboard"
       : tabName === "DigitalOcean"
         ? "Account & Droplets"
         : tabName === "Settings"
@@ -778,6 +861,17 @@ function activateTab(tabName) {
 
   if (tabName === SCHWAB_CONNECT_TAB) {
     renderSchwabConnectView();
+    return;
+  }
+  if (tabName === INVESTMENTS_TAB) {
+    renderInvestmentsLoading();
+    loadInvestmentsMarketData()
+      .then(() => renderInvestmentsView())
+      .catch((error) => {
+        workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
+          error.message || "Failed to load market data."
+        }</p></div>`;
+      });
     return;
   }
   if (tabName === "DigitalOcean") {
@@ -832,6 +926,17 @@ document.querySelector(".refresh-btn").addEventListener("click", () => {
         renderSchwabConnectView();
       }
     });
+    return;
+  }
+  if (currentTab === INVESTMENTS_TAB) {
+    renderInvestmentsLoading();
+    loadInvestmentsMarketData()
+      .then(() => renderInvestmentsView())
+      .catch((error) => {
+        workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
+          error.message || "Failed to load market data."
+        }</p></div>`;
+      });
     return;
   }
   if (currentTab === "DigitalOcean") {
@@ -951,10 +1056,10 @@ async function sendToGradient(userContent) {
 
 chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!schwabSession.connected) {
+  if (!schwabSession.connected && currentTab !== INVESTMENTS_TAB) {
     appendChatMessage(
       "assistant",
-      "Please connect your Charles Schwab account first to use the app and AI assistant.",
+      "Please connect your Charles Schwab account first for account-specific analysis. You can still use the Investments tab without login.",
       "msg-error"
     );
     openTabs.add(SCHWAB_CONNECT_TAB);
@@ -1008,6 +1113,7 @@ async function initApp() {
   }
 
   renderTabs(HOME_TAB);
+  openTabs.add(INVESTMENTS_TAB);
   if (schwabSession.connected) {
     activateTab(HOME_TAB);
   } else {

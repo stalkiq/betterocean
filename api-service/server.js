@@ -163,6 +163,83 @@ function postJson(url, requestBody, headers) {
   });
 }
 
+function getText(url) {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const req = https.request(
+      {
+        protocol: parsedUrl.protocol,
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || 443,
+        path: `${parsedUrl.pathname}${parsedUrl.search}`,
+        method: "GET",
+      },
+      (res) => {
+        let raw = "";
+        res.on("data", (chunk) => {
+          raw += chunk;
+        });
+        res.on("end", () => {
+          resolve({ status: res.statusCode || 500, data: raw });
+        });
+      }
+    );
+
+    req.setTimeout(15000, () => req.destroy(new Error("Market data request timed out")));
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function parseStooqCsv(csvText) {
+  const lines = String(csvText || "")
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean);
+  if (lines.length < 2) return [];
+
+  const headers = lines[0].split(",").map((h) => h.trim().toLowerCase());
+  const idx = (name) => headers.indexOf(name);
+  const symbolIdx = idx("symbol");
+  const openIdx = idx("open");
+  const highIdx = idx("high");
+  const lowIdx = idx("low");
+  const closeIdx = idx("close");
+  const volumeIdx = idx("volume");
+  const dateIdx = idx("date");
+
+  const labelBySymbol = {
+    "SPY.US": "S&P 500 ETF (SPY)",
+    "QQQ.US": "Nasdaq 100 ETF (QQQ)",
+    "IWM.US": "Russell 2000 ETF (IWM)",
+    "DIA.US": "Dow ETF (DIA)",
+    "GLD.US": "Gold ETF (GLD)",
+    "TLT.US": "20Y Treasury ETF (TLT)",
+  };
+
+  return lines.slice(1).map((line) => {
+    const cols = line.split(",");
+    const symbol = String(cols[symbolIdx] || "").toUpperCase();
+    const open = Number(cols[openIdx] || 0);
+    const high = Number(cols[highIdx] || 0);
+    const low = Number(cols[lowIdx] || 0);
+    const close = Number(cols[closeIdx] || 0);
+    const volume = Number(cols[volumeIdx] || 0);
+    const date = cols[dateIdx] || null;
+
+    return {
+      symbol,
+      label: labelBySymbol[symbol] || symbol,
+      open,
+      high,
+      low,
+      close,
+      volume,
+      date,
+    };
+  });
+}
+
 function readMessages(req) {
   if (Array.isArray(req.body?.messages)) return req.body.messages;
   return null;
@@ -245,6 +322,26 @@ app.use((req, res, next) => {
 
 app.get("/healthz", (_req, res) => {
   sendJson(res, 200, { ok: true, service: "betterocean-api-service" });
+});
+
+app.get(["/market/overview", "/api/market/overview"], async (_req, res) => {
+  const stooqUrl =
+    "https://stooq.com/q/l/?s=spy.us,qqq.us,iwm.us,dia.us,gld.us,tlt.us&f=sd2t2ohlcv&h&e=csv";
+  try {
+    const upstream = await getText(stooqUrl);
+    if (upstream.status < 200 || upstream.status >= 300) {
+      sendJson(res, 502, { error: `Market data provider returned ${upstream.status}` });
+      return;
+    }
+    const assets = parseStooqCsv(upstream.data).filter((a) => Number.isFinite(a.close) && a.close > 0);
+    sendJson(res, 200, {
+      source: "stooq",
+      updatedAt: new Date().toISOString(),
+      assets,
+    });
+  } catch (err) {
+    sendJson(res, 502, { error: err.message || "Failed to load market overview data." });
+  }
 });
 
 async function handleChat(req, res) {
