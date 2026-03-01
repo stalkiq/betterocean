@@ -95,23 +95,20 @@ let schwabData = { accounts: null, openOrders: null };
 let investmentsMarket = { assets: [], updatedAt: null };
 let openingPlaybook = { buckets: [], asOf: null };
 let openingQuotesBySymbol = {};
-const TICKER_WATCHLIST = [
-  "AAPL",
-  "MSFT",
-  "NVDA",
-  "AMZN",
-  "GOOGL",
-  "META",
-  "TSLA",
-  "JPM",
-  "XOM",
-  "UNH",
-];
+const DEFAULT_TICKER_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH"];
 let tickerIntelState = {
   selected: "AAPL",
   loading: false,
   report: null,
   error: "",
+  universe: [],
+  universeSource: "loading",
+  loadedQuotes: 0,
+  loadingUniverse: false,
+  quoteBySymbol: {},
+  signalFilter: "all",
+  priceFilter: "all",
+  search: "",
 };
 let marketCountdownTimer = null;
 
@@ -207,6 +204,71 @@ async function loadTickerIntelReport(symbol) {
     error: "",
   };
   return data;
+}
+
+async function loadTickerUniverse(limit = 500) {
+  const data = await schwabApi(`/api/market/ticker-universe?limit=${Math.min(500, Math.max(50, Number(limit) || 500))}`, {
+    method: "GET",
+  });
+  const symbols = Array.isArray(data.symbols)
+    ? [...new Set(data.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean))]
+    : [];
+  tickerIntelState = {
+    ...tickerIntelState,
+    universe: symbols.length ? symbols : DEFAULT_TICKER_WATCHLIST,
+    universeSource: data.source || "unknown",
+    loadingUniverse: false,
+  };
+  return tickerIntelState.universe;
+}
+
+function getPriceBucket(quote) {
+  const close = Number(quote?.close || 0);
+  if (!Number.isFinite(close) || close <= 0) return "unknown";
+  if (close < 20) return "under20";
+  if (close < 100) return "20to100";
+  if (close < 500) return "100to500";
+  return "500plus";
+}
+
+function getSignalKeyForQuote(quote) {
+  const pct = getOpenDeltaPercent(quote);
+  if (!Number.isFinite(pct)) return "neutral";
+  if (pct >= 0.4) return "bullish";
+  if (pct <= -0.4) return "bearish";
+  return "neutral";
+}
+
+async function refreshTickerUniverseQuotes({ rerender = true } = {}) {
+  const symbols = tickerIntelState.universe.length ? tickerIntelState.universe : DEFAULT_TICKER_WATCHLIST;
+  const chunkSize = 50;
+  const bySymbol = {};
+  let loaded = 0;
+
+  tickerIntelState = { ...tickerIntelState, loadingUniverse: true, loadedQuotes: 0, quoteBySymbol: {} };
+  if (rerender && currentTab === TICKER_INTEL_TAB) renderTickerIntelLoading();
+
+  for (let i = 0; i < symbols.length; i += chunkSize) {
+    const chunk = symbols.slice(i, i + chunkSize);
+    try {
+      const data = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(chunk.join(","))}`, {
+        method: "GET",
+      });
+      const quotes = Array.isArray(data.quotes) ? data.quotes : [];
+      quotes.forEach((q) => {
+        const key = String(q?.label || q?.symbol || "").toUpperCase();
+        if (key) bySymbol[key] = q;
+      });
+    } catch {
+      // Keep going even if a chunk fails.
+    }
+    loaded = Math.min(symbols.length, i + chunk.length);
+    tickerIntelState = { ...tickerIntelState, quoteBySymbol: { ...bySymbol }, loadedQuotes: loaded };
+    if (rerender && currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+  }
+
+  tickerIntelState = { ...tickerIntelState, quoteBySymbol: bySymbol, loadedQuotes: loaded, loadingUniverse: false };
+  return bySymbol;
 }
 
 async function loadPublicQuotes(symbols) {
@@ -351,40 +413,56 @@ function renderListItems(items) {
   return list.map((item) => `<li>${escapeHtml(String(item))}</li>`).join("");
 }
 
+function getFilteredTickerUniverse() {
+  const search = String(tickerIntelState.search || "")
+    .trim()
+    .toUpperCase();
+  const signalFilter = tickerIntelState.signalFilter || "all";
+  const priceFilter = tickerIntelState.priceFilter || "all";
+  const symbols = tickerIntelState.universe.length ? tickerIntelState.universe : DEFAULT_TICKER_WATCHLIST;
+
+  return symbols.filter((symbol) => {
+    if (search && !symbol.includes(search)) return false;
+    const quote = tickerIntelState.quoteBySymbol[symbol];
+    if (priceFilter !== "all" && getPriceBucket(quote) !== priceFilter) return false;
+    if (signalFilter !== "all" && getSignalKeyForQuote(quote) !== signalFilter) return false;
+    return true;
+  });
+}
+
 function renderTickerIntelLoading() {
-  const selected = tickerIntelState.selected || TICKER_WATCHLIST[0];
-  const watchlistHtml = TICKER_WATCHLIST.map(
-    (symbol) => `
-      <button type="button" class="ticker-item ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
-        <span class="ticker-item-symbol">${symbol}</span>
-      </button>
-    `
-  ).join("");
-  workspaceTableWrap.innerHTML = `
-    <section class="ticker-intel-layout">
-      <aside class="ticker-intel-list">
-        <h4>Tickers</h4>
-        <p class="settings-desc">Select a ticker for AI research signals.</p>
-        <div class="ticker-items">${watchlistHtml}</div>
-      </aside>
-      <article class="ticker-intel-report">
-        <div class="do-loading">Building deep-dive report for ${selected}...</div>
-      </article>
-    </section>
-  `;
-  wireTickerIntelEvents();
+  tickerIntelState = { ...tickerIntelState, loading: true };
+  renderTickerIntelView();
 }
 
 function renderTickerIntelView() {
-  const selected = tickerIntelState.selected || TICKER_WATCHLIST[0];
+  const selected = tickerIntelState.selected || DEFAULT_TICKER_WATCHLIST[0];
   const report = tickerIntelState.report;
-  const watchlistHtml = TICKER_WATCHLIST.map(
-    (symbol) => `
+  const filtered = getFilteredTickerUniverse();
+  const totalUniverse = tickerIntelState.universe.length || DEFAULT_TICKER_WATCHLIST.length;
+  const watchlistHtml = filtered
+    .map((symbol) => {
+      const quote = tickerIntelState.quoteBySymbol[symbol];
+      const pct = quote ? getOpenDeltaPercent(quote) : null;
+      const signalPill = quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">No Data</span>';
+      const trendClass = !Number.isFinite(pct)
+        ? "value-flat"
+        : pct > 0
+          ? "value-up"
+          : pct < 0
+            ? "value-down"
+            : "value-flat";
+      return `
       <button type="button" class="ticker-item ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
-        <span class="ticker-item-symbol">${symbol}</span>
+        <span class="ticker-item-top"><span class="ticker-item-symbol">${symbol}</span>${signalPill}</span>
+        <span class="ticker-item-bottom">
+          <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
+          <span class="${trendClass}">${formatPercent(pct)}</span>
+        </span>
       </button>
-    `
-  ).join("");
+    `;
+    })
+    .join("");
 
   const quote = report?.quote;
   const openDelta = quote ? getOpenDeltaPercent(quote) : null;
@@ -422,7 +500,9 @@ function renderTickerIntelView() {
 
   const reportHtml = tickerIntelState.error
     ? `<div class="do-error"><strong>Error</strong><p>${escapeHtml(tickerIntelState.error)}</p></div>`
-    : !report
+    : tickerIntelState.loading
+      ? `<div class="do-loading">Building deep-dive report for ${selected}...</div>`
+      : !report
       ? '<div class="do-loading">Choose a ticker to load a report.</div>'
       : `
       <header class="ticker-report-header">
@@ -464,9 +544,30 @@ function renderTickerIntelView() {
   workspaceTableWrap.innerHTML = `
     <section class="ticker-intel-layout">
       <aside class="ticker-intel-list">
-        <h4>Tickers</h4>
-        <p class="settings-desc">Left list = symbols, right panel = Gradient AI research report.</p>
-        <div class="ticker-items">${watchlistHtml}</div>
+        <h4>Tickers Universe</h4>
+        <p class="settings-desc">Showing ${filtered.length}/${totalUniverse} symbols • quotes loaded ${
+          tickerIntelState.loadedQuotes
+        }/${totalUniverse} • source: ${escapeHtml(tickerIntelState.universeSource || "unknown")}</p>
+        <div class="ticker-filters">
+          <input id="tickerSearchInput" class="trade-input" placeholder="Search symbol (e.g. AAPL)" value="${escapeHtml(
+            tickerIntelState.search || ""
+          )}" />
+          <select id="tickerSignalFilter" class="trade-input">
+            <option value="all" ${tickerIntelState.signalFilter === "all" ? "selected" : ""}>All Signals</option>
+            <option value="bullish" ${tickerIntelState.signalFilter === "bullish" ? "selected" : ""}>Bullish</option>
+            <option value="bearish" ${tickerIntelState.signalFilter === "bearish" ? "selected" : ""}>Bearish</option>
+            <option value="neutral" ${tickerIntelState.signalFilter === "neutral" ? "selected" : ""}>Neutral</option>
+          </select>
+          <select id="tickerPriceFilter" class="trade-input">
+            <option value="all" ${tickerIntelState.priceFilter === "all" ? "selected" : ""}>All Prices</option>
+            <option value="under20" ${tickerIntelState.priceFilter === "under20" ? "selected" : ""}>Under $20</option>
+            <option value="20to100" ${tickerIntelState.priceFilter === "20to100" ? "selected" : ""}>$20 - $100</option>
+            <option value="100to500" ${tickerIntelState.priceFilter === "100to500" ? "selected" : ""}>$100 - $500</option>
+            <option value="500plus" ${tickerIntelState.priceFilter === "500plus" ? "selected" : ""}>$500+</option>
+          </select>
+          <button type="button" class="schwab-btn schwab-btn-ghost" id="refreshTickerUniverseBtn">Refresh 500 Quotes</button>
+        </div>
+        <div class="ticker-items">${watchlistHtml || '<div class="settings-desc">No symbols match the current filters.</div>'}</div>
       </aside>
       <article class="ticker-intel-report">
         ${reportHtml}
@@ -477,6 +578,35 @@ function renderTickerIntelView() {
 }
 
 function wireTickerIntelEvents() {
+  const searchInput = document.getElementById("tickerSearchInput");
+  if (searchInput) {
+    searchInput.addEventListener("input", (e) => {
+      tickerIntelState = { ...tickerIntelState, search: e.target.value || "" };
+      renderTickerIntelView();
+    });
+  }
+  const signalSelect = document.getElementById("tickerSignalFilter");
+  if (signalSelect) {
+    signalSelect.addEventListener("change", (e) => {
+      tickerIntelState = { ...tickerIntelState, signalFilter: e.target.value || "all" };
+      renderTickerIntelView();
+    });
+  }
+  const priceSelect = document.getElementById("tickerPriceFilter");
+  if (priceSelect) {
+    priceSelect.addEventListener("change", (e) => {
+      tickerIntelState = { ...tickerIntelState, priceFilter: e.target.value || "all" };
+      renderTickerIntelView();
+    });
+  }
+  const refreshBtn = document.getElementById("refreshTickerUniverseBtn");
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", () => {
+      refreshTickerUniverseQuotes({ rerender: true }).catch(() => {
+        if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+      });
+    });
+  }
   workspaceTableWrap.querySelectorAll(".ticker-item").forEach((btn) => {
     btn.addEventListener("click", () => {
       const symbol = btn.dataset.ticker;
@@ -488,7 +618,12 @@ function wireTickerIntelEvents() {
           if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
         })
         .catch((error) => {
-          tickerIntelState = { ...tickerIntelState, loading: false, report: null, error: error.message || "Failed to load ticker report." };
+          tickerIntelState = {
+            ...tickerIntelState,
+            loading: false,
+            report: null,
+            error: error.message || "Failed to load ticker report.",
+          };
           if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
         });
     });
@@ -1259,7 +1394,13 @@ function activateTab(tabName) {
   }
   if (tabName === TICKER_INTEL_TAB) {
     renderTickerIntelLoading();
-    loadTickerIntelReport(tickerIntelState.selected || TICKER_WATCHLIST[0])
+    const universePromise =
+      tickerIntelState.universe.length >= 50
+        ? Promise.resolve(tickerIntelState.universe)
+        : loadTickerUniverse(500).catch(() => DEFAULT_TICKER_WATCHLIST);
+    universePromise
+      .then(() => refreshTickerUniverseQuotes({ rerender: true }).catch(() => ({})))
+      .then(() => loadTickerIntelReport(tickerIntelState.selected || tickerIntelState.universe[0] || "AAPL"))
       .then(() => renderTickerIntelView())
       .catch((error) => {
         tickerIntelState = {

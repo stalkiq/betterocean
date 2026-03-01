@@ -17,8 +17,70 @@ const SESSION_COOKIE_NAME = "bo_session";
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 7 * 24 * 60 * 60 * 1000);
 const MAX_ORDER_QTY = Number(process.env.SCHWAB_MAX_ORDER_QTY || 1000);
+const TICKER_UNIVERSE_TTL_MS = Number(process.env.TICKER_UNIVERSE_TTL_MS || 12 * 60 * 60 * 1000);
 
 const sessionStore = new Map();
+const tickerUniverseCache = { symbols: [], fetchedAt: 0 };
+const FALLBACK_TICKER_UNIVERSE = [
+  "AAPL",
+  "MSFT",
+  "NVDA",
+  "AMZN",
+  "GOOGL",
+  "META",
+  "TSLA",
+  "JPM",
+  "XOM",
+  "UNH",
+  "BRK.B",
+  "LLY",
+  "AVGO",
+  "V",
+  "MA",
+  "COST",
+  "WMT",
+  "HD",
+  "PG",
+  "JNJ",
+  "KO",
+  "PEP",
+  "MRK",
+  "ABBV",
+  "CRM",
+  "NFLX",
+  "AMD",
+  "INTC",
+  "ADBE",
+  "QCOM",
+  "TMO",
+  "ORCL",
+  "MCD",
+  "BAC",
+  "GS",
+  "MS",
+  "CAT",
+  "DE",
+  "BA",
+  "GE",
+  "NKE",
+  "DIS",
+  "PFE",
+  "CVX",
+  "SLB",
+  "COP",
+  "SPY",
+  "QQQ",
+  "IWM",
+  "DIA",
+  "GLD",
+  "TLT",
+  "XLF",
+  "XLE",
+  "XLK",
+  "XLI",
+  "XLY",
+  "XLV",
+];
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -334,6 +396,43 @@ async function fetchTickerNews(symbol, limit = 8) {
     throw new Error(`News feed request failed (${upstream.status})`);
   }
   return parseSimpleRss(upstream.data).slice(0, limit);
+}
+
+async function loadSp500TickerUniverse(limit = 500) {
+  const now = Date.now();
+  if (tickerUniverseCache.symbols.length >= 200 && now - tickerUniverseCache.fetchedAt < TICKER_UNIVERSE_TTL_MS) {
+    return tickerUniverseCache.symbols.slice(0, limit);
+  }
+
+  const url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies";
+  const upstream = await getText(url);
+  if (upstream.status < 200 || upstream.status >= 300) {
+    throw new Error(`Ticker universe source failed (${upstream.status})`);
+  }
+  const html = String(upstream.data || "");
+  const tableMatch =
+    html.match(/<table[^>]*id="constituents"[^>]*>[\s\S]*?<\/table>/i) ||
+    html.match(/<table[^>]*class="[^"]*wikitable[^"]*"[^>]*>[\s\S]*?<\/table>/i);
+  if (!tableMatch) throw new Error("Ticker universe table not found.");
+
+  const rows = tableMatch[0].match(/<tr[\s\S]*?<\/tr>/gi) || [];
+  const symbols = [];
+  rows.slice(1).forEach((row) => {
+    const firstCell = row.match(/<td[^>]*>([\s\S]*?)<\/td>/i);
+    if (!firstCell) return;
+    const raw = stripHtml(firstCell[1]).split(/\s+/)[0];
+    const symbol = normalizeTickerSymbol(raw).replace(/-/g, ".");
+    if (!symbol) return;
+    symbols.push(symbol);
+  });
+
+  const unique = [...new Set(symbols)].slice(0, limit);
+  if (unique.length < 100) {
+    throw new Error("Ticker universe source returned too few symbols.");
+  }
+  tickerUniverseCache.symbols = unique;
+  tickerUniverseCache.fetchedAt = now;
+  return unique;
 }
 
 function buildTickerReportFallback(symbol, quote, news) {
@@ -801,6 +900,26 @@ app.get(["/market/ticker-report", "/api/market/ticker-report"], async (req, res)
     sendJson(res, 200, report);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to build ticker report." });
+  }
+});
+
+app.get(["/market/ticker-universe", "/api/market/ticker-universe"], async (req, res) => {
+  const requested = Number(req.query.limit || 500);
+  const limit = Number.isFinite(requested) ? Math.max(50, Math.min(500, Math.floor(requested))) : 500;
+  try {
+    const symbols = await loadSp500TickerUniverse(limit);
+    sendJson(res, 200, {
+      source: "wikipedia-sp500",
+      updatedAt: new Date().toISOString(),
+      symbols,
+    });
+  } catch (err) {
+    sendJson(res, 200, {
+      source: "fallback",
+      updatedAt: new Date().toISOString(),
+      symbols: FALLBACK_TICKER_UNIVERSE.slice(0, limit),
+      warning: err.message || "Ticker universe source unavailable.",
+    });
   }
 });
 
