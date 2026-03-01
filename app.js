@@ -282,43 +282,6 @@ async function loadTickerUniverse(limit = 500) {
   return tickerIntelState.universe;
 }
 
-function parseSchwabQuotesPayload(payload, requestedSymbols = []) {
-  const upperRequested = [...new Set((requestedSymbols || []).map((s) => String(s || "").toUpperCase()))];
-  const out = {};
-  const records = payload && typeof payload === "object" ? payload : {};
-
-  upperRequested.forEach((symbol) => {
-    const rec = records[symbol] || records[symbol.toLowerCase()] || null;
-    const q = rec?.quote || rec?.regular || rec || null;
-    if (!q || typeof q !== "object") {
-      out[symbol] = { symbol, label: symbol, unavailable: true };
-      return;
-    }
-    const close = Number(q.lastPrice ?? q.mark ?? q.closePrice ?? q.bidPrice ?? q.askPrice);
-    const open = Number(q.openPrice ?? q.open ?? 0);
-    const high = Number(q.highPrice ?? q.high ?? 0);
-    const low = Number(q.lowPrice ?? q.low ?? 0);
-    const volume = Number(q.totalVolume ?? q.volume ?? 0);
-    if (!Number.isFinite(close) || close <= 0) {
-      out[symbol] = { symbol, label: symbol, unavailable: true };
-      return;
-    }
-    out[symbol] = {
-      symbol,
-      label: symbol,
-      close,
-      open: Number.isFinite(open) ? open : 0,
-      high: Number.isFinite(high) ? high : close,
-      low: Number.isFinite(low) ? low : close,
-      volume: Number.isFinite(volume) ? volume : 0,
-      source: "schwab",
-      unavailable: false,
-    };
-  });
-
-  return out;
-}
-
 function getPriceBucket(quote) {
   const close = Number(quote?.close || 0);
   if (!Number.isFinite(close) || close <= 0) return "unknown";
@@ -343,7 +306,7 @@ async function refreshTickerUniverseQuotes({ rerender = true, force = false } = 
   }
 
   const symbols = tickerIntelState.universe.length ? tickerIntelState.universe : DEFAULT_TICKER_WATCHLIST;
-  const chunkSize = 25;
+  const chunkSize = 50;
   const requestId = ++tickerUniverseRequestId;
   const chunks = [];
   for (let i = 0; i < symbols.length; i += chunkSize) chunks.push(symbols.slice(i, i + chunkSize));
@@ -368,21 +331,16 @@ async function refreshTickerUniverseQuotes({ rerender = true, force = false } = 
         if (index >= chunks.length) return;
         const chunk = chunks[index];
         try {
-          const data = await schwabApi(`/api/schwab/quotes?symbols=${encodeURIComponent(chunk.join(","))}`, {
+          const data = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(chunk.join(","))}`, {
             method: "GET",
           });
-          const parsed = parseSchwabQuotesPayload(data, chunk);
-          Object.assign(bySymbol, parsed);
-        } catch (error) {
-          chunk.forEach((symbol) => {
-            bySymbol[symbol] = { symbol, label: symbol, unavailable: true };
+          const quotes = Array.isArray(data.quotes) ? data.quotes : [];
+          quotes.forEach((q) => {
+            const key = String(q?.label || q?.symbol || "").toUpperCase();
+            if (key) bySymbol[key] = q;
           });
-          if (String(error?.message || "").includes("401")) {
-            tickerIntelState = {
-              ...tickerIntelState,
-              error: "Schwab login required to load live prices in this tab.",
-            };
-          }
+        } catch {
+          // Keep going even if a chunk fails.
         }
         loaded = Math.min(symbols.length, loaded + chunk.length);
         if (requestId !== tickerUniverseRequestId) return;
@@ -1573,15 +1531,6 @@ function activateTab(tabName) {
     return;
   }
   if (tabName === TICKER_INTEL_TAB) {
-    if (!schwabSession.connected) {
-      workspaceTableWrap.innerHTML = `
-        <div class="do-error">
-          <strong>Schwab Connection Required</strong>
-          <p>Live stock prices in this tab use Charles Schwab market data. Connect Schwab to continue.</p>
-        </div>
-      `;
-      return;
-    }
     renderTickerIntelLoading();
     const universePromise =
       tickerIntelState.universe.length >= 50
