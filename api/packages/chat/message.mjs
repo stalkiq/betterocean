@@ -1,10 +1,44 @@
 /**
  * Serverless proxy to DigitalOcean Gradient AI.
- * Uses Node.js built-in fetch (no dependencies needed).
+ * Uses Node.js built-in https module (no external dependencies).
  * Reads GRADIENT_AGENT_ENDPOINT and GRADIENT_AGENT_KEY from env (set in App Platform).
  * POST body: { messages: [{ role, content }, ...] }
  * Returns: { reply: string } or { error: string }
  */
+import https from 'https';
+
+function httpsPost(url, body, headers) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const payload = JSON.stringify(body);
+    const options = {
+      hostname: parsed.hostname,
+      path: parsed.pathname + parsed.search,
+      method: 'POST',
+      headers: {
+        ...headers,
+        'Content-Length': Buffer.byteLength(payload),
+      },
+      timeout: 60000,
+    };
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => { data += chunk; });
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode, body: JSON.parse(data) });
+        } catch {
+          resolve({ status: res.statusCode, body: data });
+        }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Request timed out')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
 export async function main(event) {
   const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
   const key = process.env.GRADIENT_AGENT_KEY;
@@ -13,7 +47,7 @@ export async function main(event) {
     return {
       statusCode: 503,
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
-      body: { error: 'Gradient AI is not configured. Set GRADIENT_AGENT_ENDPOINT and GRADIENT_AGENT_KEY in the app environment.' },
+      body: { error: 'Gradient AI is not configured.' },
     };
   }
 
@@ -30,32 +64,29 @@ export async function main(event) {
   const url = base.includes('/v1') ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
 
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${key}`,
-      },
-      body: JSON.stringify({
+    const result = await httpsPost(
+      url,
+      {
         model: process.env.GRADIENT_MODEL || 'openai-gpt-oss-120b',
         messages,
         stream: false,
-      }),
-      signal: AbortSignal.timeout(60000),
-    });
+      },
+      {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${key}`,
+      }
+    );
 
-    const data = await res.json().catch(() => ({}));
-
-    if (!res.ok) {
-      const msg = data?.message || data?.error?.message || data?.error || `Gradient returned ${res.status}`;
+    if (result.status < 200 || result.status >= 300) {
+      const msg = result.body?.message || result.body?.error?.message || result.body?.error || `Gradient returned ${result.status}`;
       return {
-        statusCode: res.status,
+        statusCode: result.status,
         headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
         body: { error: msg },
       };
     }
 
-    const text = data?.choices?.[0]?.message?.content;
+    const text = result.body?.choices?.[0]?.message?.content;
     return {
       statusCode: 200,
       headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
