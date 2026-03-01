@@ -332,6 +332,10 @@ td {
   font-weight: 500;
 }
 
+.chat-panel-badge.connected {
+  color: #79d7a0;
+}
+
 .chat-log {
   padding: 10px;
   overflow: auto;
@@ -488,6 +492,12 @@ td {
   border-radius: 8px;
   padding: 8px 12px;
   cursor: pointer;
+}
+
+.chat-form button:disabled,
+.chat-form input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 @media (max-width: 1200px) {

@@ -14,6 +14,7 @@ const DO_API_BASE = "https://api.digitalocean.com";
 const TOKEN_KEY = "do_api_token";
 const API_CHAT_URL = "/api/chat/message";
 const HOME_TAB = "Assets";
+const SCHWAB_CONNECT_TAB = "Schwab Connect";
 const RESPONSE_STYLE_PROMPT =
   "Reply in 3-6 concise bullet points with short, scannable lines. Keep spacing clean and avoid long paragraphs.";
 
@@ -137,6 +138,8 @@ let currentAgentId = AGENTS[0].id;
 const announcedAgents = new Set();
 
 let chatHistory = [];
+let schwabSession = { connected: false };
+let schwabData = { accounts: null, openOrders: null };
 
 function getDoToken() {
   return sessionStorage.getItem(TOKEN_KEY) || "";
@@ -156,14 +159,76 @@ async function doApi(path, token) {
   return data;
 }
 
+async function schwabApi(path, options = {}) {
+  const res = await fetch(path, {
+    credentials: "include",
+    ...options,
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Schwab request failed (${res.status})`);
+  return data;
+}
+
+async function refreshSchwabSession() {
+  try {
+    schwabSession = await schwabApi("/api/schwab/me", { method: "GET" });
+  } catch {
+    schwabSession = { connected: false };
+  }
+  updateSchwabChatBadge();
+}
+
+async function loadSchwabContextData() {
+  if (!schwabSession.connected) {
+    schwabData = { accounts: null, openOrders: null };
+    return;
+  }
+  try {
+    const [accounts, openOrders] = await Promise.all([
+      schwabApi("/api/schwab/accounts", { method: "GET" }),
+      schwabApi("/api/schwab/orders/open?maxResults=25", { method: "GET" }),
+    ]);
+    schwabData = { accounts, openOrders };
+  } catch {
+    schwabData = { accounts: null, openOrders: null };
+  }
+}
+
+function startSchwabLogin() {
+  window.location.href = "/api/schwab/login";
+}
+
+async function logoutSchwab() {
+  await schwabApi("/api/schwab/logout", { method: "POST" });
+  chatHistory = [];
+  schwabSession = { connected: false };
+  schwabData = { accounts: null, openOrders: null };
+  updateSchwabChatBadge();
+  openTabs.add(SCHWAB_CONNECT_TAB);
+  activateTab(SCHWAB_CONNECT_TAB);
+}
+
 function getCurrentAgent() {
   return AGENT_BY_ID[currentAgentId] || AGENTS[0];
+}
+
+function updateSchwabChatBadge() {
+  if (!chatPanelBadge) return;
+  chatPanelBadge.textContent = schwabSession.connected ? "Schwab Connected" : "Schwab Login Required";
+  chatPanelBadge.classList.toggle("connected", Boolean(schwabSession.connected));
+  const sendBtn = chatForm.querySelector("button[type='submit']");
+  if (sendBtn) sendBtn.disabled = !schwabSession.connected;
+  chatInput.disabled = !schwabSession.connected;
 }
 
 function setChatContextFromAgent(agent, announce = false) {
   chatInput.placeholder = `Ask ${agent.tab}...`;
   if (chatPanelTitle) chatPanelTitle.textContent = agent.tab;
-  if (chatPanelBadge) chatPanelBadge.textContent = "Gradient AI";
+  updateSchwabChatBadge();
 
   if (announce && !announcedAgents.has(agent.id)) {
     appendChatMessage(
@@ -260,6 +325,29 @@ function renderAgentView(agent) {
     )
     .join("");
 
+  const connectedSummary = schwabSession.connected
+    ? `
+      <article class="agent-card">
+        <h4>Schwab account snapshot</h4>
+        <ul class="agent-list">
+          <li>Connected accounts: ${
+            Array.isArray(schwabData.accounts) ? schwabData.accounts.length : schwabSession.accountCount || 0
+          }</li>
+          <li>Open orders: ${
+            Array.isArray(schwabData.openOrders?.orders) ? schwabData.openOrders.orders.length : 0
+          }</li>
+          <li>Primary account hash: ${schwabSession.accountHash || "-"}</li>
+        </ul>
+      </article>
+    `
+    : `
+      <article class="agent-card">
+        <h4>Schwab account snapshot</h4>
+        <p class="settings-desc">Connect Schwab to unlock live balances, positions, orders, and quote context.</p>
+        <button type="button" class="prompt-btn" id="connectSchwabInlineBtn">Connect Schwab</button>
+      </article>
+    `;
+
   workspaceTableWrap.innerHTML = `
     <div class="agent-view">
       <section class="agent-hero">
@@ -275,6 +363,7 @@ function renderAgentView(agent) {
           <h4>Quick prompts</h4>
           <div class="prompt-list">${promptHtml}</div>
         </article>
+        ${connectedSummary}
       </section>
     </div>
   `;
@@ -288,6 +377,56 @@ function renderAgentView(agent) {
       chatForm.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
     });
   });
+
+  const connectBtn = document.getElementById("connectSchwabInlineBtn");
+  if (connectBtn) {
+    connectBtn.addEventListener("click", startSchwabLogin);
+  }
+}
+
+function renderSchwabConnectView() {
+  workspaceTableWrap.innerHTML = `
+    <div class="agent-view">
+      <section class="agent-hero">
+        <h3>Connect Charles Schwab</h3>
+        <p>Sign in with your Charles Schwab account to use BetterOcean features, including account context, quotes, positions, and trading actions.</p>
+      </section>
+      <section class="agent-grid">
+        <article class="agent-card">
+          <h4>Status</h4>
+          <ul class="agent-list">
+            <li>Connected: ${schwabSession.connected ? "Yes" : "No"}</li>
+            <li>Accounts detected: ${schwabSession.accountCount || 0}</li>
+            <li>Primary account: ${schwabSession.accountNumber || "-"}</li>
+          </ul>
+        </article>
+        <article class="agent-card">
+          <h4>Actions</h4>
+          <div class="prompt-list">
+            <button type="button" class="prompt-btn" id="schwabConnectBtn">Connect Schwab</button>
+            ${
+              schwabSession.connected
+                ? '<button type="button" class="prompt-btn" id="schwabDisconnectBtn">Disconnect</button>'
+                : ""
+            }
+          </div>
+        </article>
+      </section>
+    </div>
+  `;
+
+  const connectBtn = document.getElementById("schwabConnectBtn");
+  if (connectBtn) connectBtn.addEventListener("click", startSchwabLogin);
+  const disconnectBtn = document.getElementById("schwabDisconnectBtn");
+  if (disconnectBtn) {
+    disconnectBtn.addEventListener("click", async () => {
+      try {
+        await logoutSchwab();
+      } catch (e) {
+        appendChatMessage("assistant", e.message || "Failed to disconnect Schwab.", "msg-error");
+      }
+    });
+  }
 }
 
 function renderSettingsView() {
@@ -387,13 +526,25 @@ async function loadDoView() {
 }
 
 function activateTab(tabName) {
+  if (!schwabSession.connected && tabName !== SCHWAB_CONNECT_TAB && tabName !== "Settings") {
+    openTabs.add(SCHWAB_CONNECT_TAB);
+    currentTab = SCHWAB_CONNECT_TAB;
+    titleEl.textContent = SCHWAB_CONNECT_TAB;
+    subEl.textContent = "Schwab OAuth required";
+    renderTabs(SCHWAB_CONNECT_TAB);
+    renderSchwabConnectView();
+    return;
+  }
+
   currentTab = tabName;
   const agent = AGENT_BY_TAB[tabName];
 
   titleEl.textContent = tabName;
   subEl.textContent = agent
     ? agent.subtitle
-    : tabName === "Assets"
+    : tabName === SCHWAB_CONNECT_TAB
+      ? "Schwab OAuth required"
+      : tabName === "Assets"
       ? "Market Watch"
       : tabName === "DigitalOcean"
         ? "Account & Droplets"
@@ -405,6 +556,10 @@ function activateTab(tabName) {
 
   if (tabName === "Assets") {
     renderAssetsView();
+    return;
+  }
+  if (tabName === SCHWAB_CONNECT_TAB) {
+    renderSchwabConnectView();
     return;
   }
   if (tabName === "DigitalOcean") {
@@ -451,6 +606,16 @@ function activateTab(tabName) {
 }
 
 document.querySelector(".refresh-btn").addEventListener("click", () => {
+  if (currentTab === SCHWAB_CONNECT_TAB) {
+    refreshSchwabSession().then(() => {
+      if (schwabSession.connected) {
+        loadSchwabContextData().then(() => activateTab(HOME_TAB));
+      } else {
+        renderSchwabConnectView();
+      }
+    });
+    return;
+  }
   if (currentTab === "DigitalOcean") {
     loadDoView();
     return;
@@ -538,9 +703,15 @@ function normalizeToBullets(text) {
 
 async function sendToGradient(userContent) {
   const agent = getCurrentAgent();
+  const schwabContext = schwabSession.connected
+    ? `Schwab context: connected account count=${schwabSession.accountCount || 0}, primary account hash=${
+        schwabSession.accountHash || "unknown"
+      }, open orders=${Array.isArray(schwabData.openOrders?.orders) ? schwabData.openOrders.orders.length : 0}.`
+    : "Schwab context unavailable (user not connected).";
   const messages = [
     { role: "system", content: agent.systemPrompt },
     { role: "system", content: RESPONSE_STYLE_PROMPT },
+    { role: "system", content: schwabContext },
     ...chatHistory,
     { role: "user", content: userContent },
   ];
@@ -560,6 +731,16 @@ async function sendToGradient(userContent) {
 
 chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
+  if (!schwabSession.connected) {
+    appendChatMessage(
+      "assistant",
+      "Please connect your Charles Schwab account first to use the app and AI assistant.",
+      "msg-error"
+    );
+    openTabs.add(SCHWAB_CONNECT_TAB);
+    activateTab(SCHWAB_CONNECT_TAB);
+    return;
+  }
   const value = chatInput.value.trim();
   if (!value) return;
 
@@ -596,6 +777,34 @@ chatForm.addEventListener("submit", async (e) => {
   }
 });
 
-renderTabs("Assets");
-activateTab("Assets");
-setChatContextFromAgent(getCurrentAgent(), true);
+async function initApp() {
+  const params = new URLSearchParams(window.location.search);
+  const schwabFlag = params.get("schwab");
+  const schwabReason = params.get("reason");
+
+  await refreshSchwabSession();
+  if (schwabSession.connected) {
+    await loadSchwabContextData();
+  }
+
+  renderTabs(HOME_TAB);
+  if (schwabSession.connected) {
+    activateTab(HOME_TAB);
+  } else {
+    openTabs.add(SCHWAB_CONNECT_TAB);
+    activateTab(SCHWAB_CONNECT_TAB);
+  }
+  setChatContextFromAgent(getCurrentAgent(), true);
+
+  if (schwabFlag === "connected") {
+    appendChatMessage("assistant", "Schwab login successful. Your account is connected.", "msg-muted");
+  } else if (schwabFlag === "error") {
+    appendChatMessage(
+      "assistant",
+      `Schwab login failed: ${schwabReason || "Unknown error."}`,
+      "msg-error"
+    );
+  }
+}
+
+initApp();

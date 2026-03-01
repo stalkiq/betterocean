@@ -46,3 +46,47 @@ services:
         scope: RUN_AND_BUILD_TIME
         type: SECRET
         value: "sk-do-4AWFoeMqCUXGWDFGj7wv28690WpGCcWeZTM2_HR1vViLlYBo_BLyo8apjf"
+      - key: SCHWAB_CLIENT_ID
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: "set-me"
+      - key: SCHWAB_CLIENT_SECRET
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: "set-me"
+      - key: SCHWAB_REDIRECT_URI
+        scope: RUN_AND_BUILD_TIME
+        type: GENERAL
+        value: "https://seal-app-m5pqo.ondigitalocean.app/api/schwab/callback"
+      - key: SCHWAB_OAUTH_AUTHORIZE_URL
+        scope: RUN_AND_BUILD_TIME
+        type: GENERAL
+        value: "https://api.schwabapi.com/v1/oauth/authorize"
+      - key: SCHWAB_OAUTH_TOKEN_URL
+        scope: RUN_AND_BUILD_TIME
+        type: GENERAL
+        value: "https://api.schwabapi.com/v1/oauth/token"
+      - key: SCHWAB_TRADER_BASE_URL
+        scope: RUN_AND_BUILD_TIME
+        type: GENERAL
+        value: "https://api.schwabapi.com/trader/v1"
+      - key: SCHWAB_MARKETDATA_BASE_URL
+        scope: RUN_AND_BUILD_TIME
+        type: GENERAL
+        value: "https://api.schwabapi.com/marketdata/v1"
+      - key: CLIENT_APP_URL
+        scope: RUN_AND_BUILD_TIME
+        type: GENERAL
+        value: "https://seal-app-m5pqo.ondigitalocean.app"
+      - key: SESSION_SECRET
+        scope: RUN_AND_BUILD_TIME
+        type: SECRET
+        value: "set-me"
+      - key: SCHWAB_DRY_RUN
+        scope: RUN_AND_BUILD_TIME
+        type: GENERAL
+        value: "true"
+      - key: SCHWAB_MAX_ORDER_QTY
+        scope: RUN_AND_BUILD_TIME
+        type: GENERAL
+        value: "1000"

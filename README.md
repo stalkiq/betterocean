@@ -1,9 +1,10 @@
 # BetterOcean
 
-Static web app shell with backend APIs for an **investing platform** powered by [DigitalOcean Gradient™ AI](https://docs.digitalocean.com/products/gradient-ai-platform). Charles Schwab API integration can be added later.
+Static web app shell with backend APIs for an **investing platform** powered by [DigitalOcean Gradient™ AI](https://docs.digitalocean.com/products/gradient-ai-platform) and **Charles Schwab OAuth + trading APIs**.
 
 - **Frontend:** Static HTML/CSS/JS (three-pane UI: rail, workspace, Gradient™ AI chat).
 - **Backend:** App Platform service `POST /api/chat/message` proxies chat to Gradient AI; credentials stay on the server so all users get the same assistant without configuring anything in the app.
+- **Broker auth/data:** Charles Schwab OAuth login per user with server-side token handling and Schwab account/market/trading routes.
 
 ## Run locally
 
@@ -53,6 +54,41 @@ The right-hand chat is powered by Gradient AI via a **backend API service**. Use
 4. **Chat**  
    Users type in the chat; the frontend sends `POST /api/chat/message` with the conversation history. The backend service calls Gradient with the env credentials and returns the reply. No keys or config are exposed to the browser.
 
+## Charles Schwab OAuth + Trading
+
+Users must connect their Schwab account to use core app features.
+
+1. **Create Schwab app**  
+   In the [Schwab Developer Portal](https://developer.schwab.com), create your app and set callback URL(s):
+   - Production: `https://seal-app-m5pqo.ondigitalocean.app/api/schwab/callback`
+   - Optional local: `http://localhost:8080/api/schwab/callback`
+
+2. **Configure env vars on `api` service**  
+   In App Platform, add:
+   - `SCHWAB_CLIENT_ID` (secret)
+   - `SCHWAB_CLIENT_SECRET` (secret)
+   - `SCHWAB_REDIRECT_URI` (general, usually your production callback)
+   - `SESSION_SECRET` (secret random string)
+   - `SCHWAB_DRY_RUN` (`true` for safety while testing order flow)
+   - `SCHWAB_MAX_ORDER_QTY` (guardrail, default `1000`)
+
+3. **OAuth flow**  
+   - `GET /api/schwab/login` -> redirects user to Schwab auth page
+   - `GET /api/schwab/callback` -> backend exchanges code for tokens and stores session cookie
+   - `GET /api/schwab/me` -> returns connected session summary
+   - `POST /api/schwab/logout` -> disconnects Schwab session
+
+4. **Schwab data and trading endpoints**
+   - `GET /api/schwab/accounts`
+   - `GET /api/schwab/positions?accountHash=...`
+   - `GET /api/schwab/balances?accountHash=...`
+   - `GET /api/schwab/orders/open?accountHash=...`
+   - `GET /api/schwab/quotes?symbols=AAPL,MSFT`
+   - `POST /api/schwab/orders` (place order)
+   - `DELETE /api/schwab/orders/:orderId?accountHash=...` (cancel order)
+
+All Schwab tokens stay on the backend. The browser only receives session-level status and route responses.
+
 ## Host on DigitalOcean (App Platform)
 
 The app has two components: a **static site** (web shell) and a **Service** component (backend API for chat). Deploy from the same repo.
@@ -68,5 +104,5 @@ Push this project to a GitHub repo (e.g. `stalkiq/betterocean`).
 3. The spec defines:
    - **web** (static site): source `/`, serves the shell.
    - **api** (service): source `api-service/`, route `/api`; exposes `POST /api/chat/message`.
-4. Add environment variables to the **api** component (see **Gradient™ AI** above): `GRADIENT_AGENT_ENDPOINT`, `GRADIENT_AGENT_KEY`.
+4. Add environment variables to the **api** component for Gradient + Schwab (see sections above).
 5. Deploy. The live URL serves the static site at `/` and the chat API at `/api/chat/message`.
