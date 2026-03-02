@@ -190,8 +190,9 @@ async function schwabApiRequest(tokenBundle, method, path, query = null, body = 
     method,
     url.toString(),
     {
-      "Content-Type": "application/json",
       Authorization: `Bearer ${tokenBundle.accessToken}`,
+      Accept: "application/json",
+      ...(body != null ? { "Content-Type": "application/json" } : {}),
     },
     body
   );

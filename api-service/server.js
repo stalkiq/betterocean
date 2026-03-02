@@ -1041,47 +1041,68 @@ app.get("/schwab/callback", async (req, res) => {
 
   try {
     const tokenBundle = await exchangeCodeForToken(String(code));
-    const accountResult = await schwabApiRequest(tokenBundle, "GET", "/accounts/accountNumbers");
     let accountNumbers = [];
+    const diagnostics = [];
 
-    if (accountResult.status >= 200 && accountResult.status < 300 && Array.isArray(accountResult.data)) {
-      accountNumbers = accountResult.data;
+    const accountNumberResult = await schwabApiRequest(tokenBundle, "GET", "/accounts/accountNumbers");
+    diagnostics.push({ key: "accountNumbers", status: accountNumberResult.status, data: accountNumberResult.data });
+    if (
+      accountNumberResult.status >= 200 &&
+      accountNumberResult.status < 300 &&
+      Array.isArray(accountNumberResult.data)
+    ) {
+      accountNumbers = accountNumberResult.data;
     }
 
-    // Some Schwab app configurations reject /accounts/accountNumbers but still allow /accounts.
+    // Fallback 1: /accounts without fields.
     if (!accountNumbers.length) {
-      const accountsFallback = await schwabApiRequest(tokenBundle, "GET", "/accounts", { fields: "positions" });
-      if (accountsFallback.status >= 200 && accountsFallback.status < 300 && Array.isArray(accountsFallback.data)) {
-        accountNumbers = accountsFallback.data
+      const accountsBasic = await schwabApiRequest(tokenBundle, "GET", "/accounts");
+      diagnostics.push({ key: "accountsBasic", status: accountsBasic.status, data: accountsBasic.data });
+      if (accountsBasic.status >= 200 && accountsBasic.status < 300 && Array.isArray(accountsBasic.data)) {
+        accountNumbers = accountsBasic.data
           .map((entry) => ({
             accountNumber: entry?.securitiesAccount?.accountNumber || entry?.accountNumber || null,
             hashValue: entry?.securitiesAccount?.hashValue || entry?.hashValue || null,
           }))
           .filter((entry) => entry.accountNumber || entry.hashValue);
       }
+    }
 
-      if (!accountNumbers.length) {
-        const primaryDetail =
-          accountResult.data?.error_description ||
-          accountResult.data?.message ||
-          accountResult.data?.error ||
-          (accountResult.data && typeof accountResult.data === "object" ? JSON.stringify(accountResult.data) : "") ||
-          `HTTP ${accountResult.status}`;
-        const fallbackDetail =
-          accountsFallback?.data?.error_description ||
-          accountsFallback?.data?.message ||
-          accountsFallback?.data?.error ||
-          (accountsFallback?.data && typeof accountsFallback.data === "object"
-            ? JSON.stringify(accountsFallback.data)
-            : "") ||
-          `HTTP ${accountsFallback?.status || "unknown"}`;
-        throw new Error(
-          `Schwab account link failed: accountNumbers=${accountResult.status} (${String(primaryDetail).slice(
-            0,
-            220
-          )}), accounts=${accountsFallback?.status || "unknown"} (${String(fallbackDetail).slice(0, 220)})`
-        );
+    // Fallback 2: /accounts with positions for compatibility with older behavior.
+    if (!accountNumbers.length) {
+      const accountsWithPositions = await schwabApiRequest(tokenBundle, "GET", "/accounts", { fields: "positions" });
+      diagnostics.push({
+        key: "accountsPositions",
+        status: accountsWithPositions.status,
+        data: accountsWithPositions.data,
+      });
+      if (
+        accountsWithPositions.status >= 200 &&
+        accountsWithPositions.status < 300 &&
+        Array.isArray(accountsWithPositions.data)
+      ) {
+        accountNumbers = accountsWithPositions.data
+          .map((entry) => ({
+            accountNumber: entry?.securitiesAccount?.accountNumber || entry?.accountNumber || null,
+            hashValue: entry?.securitiesAccount?.hashValue || entry?.hashValue || null,
+          }))
+          .filter((entry) => entry.accountNumber || entry.hashValue);
       }
+    }
+
+    if (!accountNumbers.length) {
+      const summary = diagnostics
+        .map((d) => {
+          const detail =
+            d.data?.error_description ||
+            d.data?.message ||
+            d.data?.error ||
+            (d.data && typeof d.data === "object" ? JSON.stringify(d.data) : "") ||
+            "no_detail";
+          return `${d.key}=${d.status} (${String(detail).slice(0, 180)})`;
+        })
+        .join(", ");
+      throw new Error(`Schwab account link failed: ${summary}`);
     }
 
     req.session.schwabTokens = tokenBundle;
