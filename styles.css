@@ -760,6 +760,10 @@ td {
   gap: 12px;
 }
 
+.portfolio-empty-grid {
+  margin-top: 12px;
+}
+
 .schwab-card {
   border: 1px solid #253955;
   border-radius: 12px;

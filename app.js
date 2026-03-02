@@ -896,6 +896,7 @@ function renderPortfolioView() {
       `;
     })
     .join("");
+  const hasPositions = positions.length > 0;
 
   workspaceTableWrap.innerHTML = `
     <div class="agent-view">
@@ -940,8 +941,64 @@ function renderPortfolioView() {
           <tbody>${rows || '<tr><td colspan="4">No positions returned.</td></tr>'}</tbody>
         </table>
       </section>
+      ${
+        hasPositions
+          ? ""
+          : `
+      <section class="schwab-grid portfolio-empty-grid">
+        <article class="schwab-card">
+          <h4>Start Investing</h4>
+          <p class="schwab-card-sub">
+            Your account is connected, but there are no open equity positions yet. Place your first buy order below.
+          </p>
+          <div class="schwab-actions">
+            <button type="button" class="schwab-btn schwab-btn-ghost" data-quick-symbol="SPY">Use SPY</button>
+            <button type="button" class="schwab-btn schwab-btn-ghost" data-quick-symbol="QQQ">Use QQQ</button>
+            <button type="button" class="schwab-btn schwab-btn-ghost" data-quick-symbol="AAPL">Use AAPL</button>
+          </div>
+        </article>
+        <article class="schwab-card">
+          <h4>Quick Buy Ticket</h4>
+          <p class="schwab-card-sub">Submit a market order directly from My Portfolio.</p>
+          <form class="trade-form" id="portfolioTradeTicketForm">
+            <label class="trade-label">Side</label>
+            <select class="trade-input" data-trade-side>
+              <option value="BUY">Buy</option>
+              <option value="SELL">Sell</option>
+            </select>
+
+            <label class="trade-label">Symbol</label>
+            <input class="trade-input" data-trade-symbol placeholder="AAPL" autocomplete="off" />
+
+            <label class="trade-label">Quantity</label>
+            <input class="trade-input" data-trade-qty type="number" min="1" step="1" value="1" />
+
+            <button type="submit" class="schwab-btn schwab-btn-primary">Submit Order</button>
+          </form>
+          <div class="trade-status" id="portfolioTradeTicketStatus"></div>
+        </article>
+      </section>
+      `
+      }
     </div>
   `;
+
+  if (!hasPositions) {
+    wireTradeTicketForm({
+      formId: "portfolioTradeTicketForm",
+      statusId: "portfolioTradeTicketStatus",
+      onSuccess: () => renderPortfolioView(),
+    });
+    const symbolInput = workspaceTableWrap.querySelector("[data-trade-symbol]");
+    const quickBtns = workspaceTableWrap.querySelectorAll("[data-quick-symbol]");
+    quickBtns.forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (!symbolInput) return;
+        symbolInput.value = String(btn.getAttribute("data-quick-symbol") || "").toUpperCase();
+        symbolInput.focus();
+      });
+    });
+  }
 }
 
 function buildMissionZoneContext(agentId) {
@@ -999,6 +1056,59 @@ function buildEquityMarketOrder({ side, symbol, quantity }) {
       },
     ],
   };
+}
+
+function wireTradeTicketForm({ formId, statusId, onSuccess }) {
+  const tradeForm = document.getElementById(formId);
+  const tradeStatus = document.getElementById(statusId);
+  if (!tradeForm || !tradeStatus) return;
+
+  tradeForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!schwabSession.connected) return;
+
+    const side = String(tradeForm.querySelector("[data-trade-side]")?.value || "BUY").toUpperCase();
+    const symbol = String(tradeForm.querySelector("[data-trade-symbol]")?.value || "")
+      .trim()
+      .toUpperCase();
+    const quantity = Number(tradeForm.querySelector("[data-trade-qty]")?.value || 0);
+
+    if (!symbol) {
+      tradeStatus.textContent = "Enter a valid symbol.";
+      tradeStatus.className = "trade-status error";
+      return;
+    }
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      tradeStatus.textContent = "Quantity must be greater than zero.";
+      tradeStatus.className = "trade-status error";
+      return;
+    }
+
+    const order = buildEquityMarketOrder({ side, symbol, quantity });
+    tradeStatus.textContent = "Submitting order...";
+    tradeStatus.className = "trade-status pending";
+
+    try {
+      const result = await schwabApi("/api/schwab/orders", {
+        method: "POST",
+        body: JSON.stringify({ order }),
+      });
+      if (result?.dryRun) {
+        tradeStatus.textContent = result.message || "Dry run: order validated but not sent.";
+        tradeStatus.className = "trade-status pending";
+        appendChatMessage("assistant", tradeStatus.textContent, "msg-muted");
+        return;
+      }
+      tradeStatus.textContent = `Order submitted: ${side} ${quantity} ${symbol}`;
+      tradeStatus.className = "trade-status success";
+      appendChatMessage("assistant", tradeStatus.textContent, "msg-muted");
+      await loadSchwabContextData();
+      if (typeof onSuccess === "function") onSuccess();
+    } catch (error) {
+      tradeStatus.textContent = error.message || "Order submission failed.";
+      tradeStatus.className = "trade-status error";
+    }
+  });
 }
 
 function getCurrentAgent() {
@@ -1393,16 +1503,16 @@ function renderSchwabConnectView() {
           </p>
           <form class="trade-form" id="tradeTicketForm">
             <label class="trade-label">Side</label>
-            <select class="trade-input" id="tradeSide" ${isConnected ? "" : "disabled"}>
+            <select class="trade-input" id="tradeSide" data-trade-side ${isConnected ? "" : "disabled"}>
               <option value="BUY">Buy</option>
               <option value="SELL">Sell</option>
             </select>
 
             <label class="trade-label">Symbol</label>
-            <input class="trade-input" id="tradeSymbol" placeholder="AAPL" autocomplete="off" ${isConnected ? "" : "disabled"} />
+            <input class="trade-input" id="tradeSymbol" data-trade-symbol placeholder="AAPL" autocomplete="off" ${isConnected ? "" : "disabled"} />
 
             <label class="trade-label">Quantity</label>
-            <input class="trade-input" id="tradeQty" type="number" min="1" step="1" value="1" ${isConnected ? "" : "disabled"} />
+            <input class="trade-input" id="tradeQty" data-trade-qty type="number" min="1" step="1" value="1" ${isConnected ? "" : "disabled"} />
 
             <button type="submit" class="schwab-btn schwab-btn-primary" ${isConnected ? "" : "disabled"}>
               Submit Order
@@ -1427,55 +1537,7 @@ function renderSchwabConnectView() {
     });
   }
 
-  const tradeForm = document.getElementById("tradeTicketForm");
-  const tradeStatus = document.getElementById("tradeTicketStatus");
-  if (tradeForm && tradeStatus) {
-    tradeForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (!schwabSession.connected) return;
-
-      const side = String(document.getElementById("tradeSide")?.value || "BUY").toUpperCase();
-      const symbol = String(document.getElementById("tradeSymbol")?.value || "")
-        .trim()
-        .toUpperCase();
-      const quantity = Number(document.getElementById("tradeQty")?.value || 0);
-
-      if (!symbol) {
-        tradeStatus.textContent = "Enter a valid symbol.";
-        tradeStatus.className = "trade-status error";
-        return;
-      }
-      if (!Number.isFinite(quantity) || quantity <= 0) {
-        tradeStatus.textContent = "Quantity must be greater than zero.";
-        tradeStatus.className = "trade-status error";
-        return;
-      }
-
-      const order = buildEquityMarketOrder({ side, symbol, quantity });
-      tradeStatus.textContent = "Submitting order...";
-      tradeStatus.className = "trade-status pending";
-
-      try {
-        const result = await schwabApi("/api/schwab/orders", {
-          method: "POST",
-          body: JSON.stringify({ order }),
-        });
-        if (result?.dryRun) {
-          tradeStatus.textContent = result.message || "Dry run: order validated but not sent.";
-          tradeStatus.className = "trade-status pending";
-          appendChatMessage("assistant", tradeStatus.textContent, "msg-muted");
-          return;
-        }
-        tradeStatus.textContent = `Order submitted: ${side} ${quantity} ${symbol}`;
-        tradeStatus.className = "trade-status success";
-        appendChatMessage("assistant", tradeStatus.textContent, "msg-muted");
-        await loadSchwabContextData();
-      } catch (error) {
-        tradeStatus.textContent = error.message || "Order submission failed.";
-        tradeStatus.className = "trade-status error";
-      }
-    });
-  }
+  wireTradeTicketForm({ formId: "tradeTicketForm", statusId: "tradeTicketStatus" });
 }
 
 function renderSettingsView() {
