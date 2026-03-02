@@ -290,6 +290,106 @@ async function loadTickerUniverse(limit = 500) {
   return tickerIntelState.universe;
 }
 
+function toFiniteNumber(...values) {
+  for (const value of values) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function normalizeUnifiedQuote(input, symbolHint = "") {
+  const quote = input?.quote && typeof input.quote === "object" ? input.quote : input || {};
+  const symbol = String(input?.symbol || quote?.symbol || symbolHint || "")
+    .trim()
+    .toUpperCase();
+  if (!symbol) return null;
+
+  const open = toFiniteNumber(quote?.openPrice, quote?.open, input?.open, quote?.regularMarketOpen);
+  const high = toFiniteNumber(quote?.highPrice, quote?.high, input?.high, quote?.regularMarketDayHigh);
+  const low = toFiniteNumber(quote?.lowPrice, quote?.low, input?.low, quote?.regularMarketDayLow);
+  const close = toFiniteNumber(
+    quote?.lastPrice,
+    quote?.mark,
+    quote?.closePrice,
+    quote?.close,
+    input?.close,
+    quote?.regularMarketLastPrice
+  );
+
+  if (!Number.isFinite(close) || close <= 0) {
+    return { symbol, label: symbol, unavailable: true };
+  }
+
+  const safeOpen = Number.isFinite(open) && open > 0 ? open : close;
+  const safeHigh = Number.isFinite(high) ? high : Math.max(close, safeOpen);
+  const safeLow = Number.isFinite(low) ? low : Math.min(close, safeOpen);
+
+  return {
+    symbol,
+    label: symbol,
+    open: safeOpen,
+    high: safeHigh,
+    low: safeLow,
+    close,
+  };
+}
+
+function parseSchwabQuotesPayload(payload, requestedSymbols) {
+  const requested = [...new Set((requestedSymbols || []).map((s) => String(s || "").toUpperCase()).filter(Boolean))];
+  const bySymbol = {};
+
+  if (payload && typeof payload === "object") {
+    if (Array.isArray(payload.quotes)) {
+      payload.quotes.forEach((entry) => {
+        const normalized = normalizeUnifiedQuote(entry);
+        if (normalized?.symbol) bySymbol[normalized.symbol] = normalized;
+      });
+    } else {
+      Object.entries(payload).forEach(([symbolKey, entry]) => {
+        const normalized = normalizeUnifiedQuote(entry, symbolKey);
+        if (normalized?.symbol) bySymbol[normalized.symbol] = normalized;
+      });
+    }
+  }
+
+  return requested.map((symbol) => bySymbol[symbol] || { symbol, label: symbol, unavailable: true });
+}
+
+async function fetchTickerQuoteBatch(symbols) {
+  const requested = [...new Set((symbols || []).map((s) => String(s || "").trim().toUpperCase()).filter(Boolean))];
+  if (!requested.length) return [];
+
+  if (schwabSession.connected) {
+    try {
+      const schwabPayload = await schwabApi(
+        `/api/schwab/quotes?symbols=${encodeURIComponent(requested.join(","))}&fields=quote`,
+        { method: "GET" }
+      );
+      const schwabQuotes = parseSchwabQuotesPayload(schwabPayload, requested);
+      const missing = schwabQuotes.filter((q) => q?.unavailable).map((q) => q.symbol);
+      if (!missing.length) return schwabQuotes;
+
+      const publicData = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(missing.join(","))}`, {
+        method: "GET",
+      });
+      const publicQuotes = Array.isArray(publicData.quotes) ? publicData.quotes : [];
+      const publicBySymbol = Object.fromEntries(
+        publicQuotes.map((q) => [String(q?.label || q?.symbol || "").toUpperCase(), q]).filter(([key]) => Boolean(key))
+      );
+
+      return schwabQuotes.map((q) => (q?.unavailable && publicBySymbol[q.symbol] ? publicBySymbol[q.symbol] : q));
+    } catch {
+      // Fallback to public feed when Schwab quote request fails.
+    }
+  }
+
+  const publicData = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(requested.join(","))}`, {
+    method: "GET",
+  });
+  return Array.isArray(publicData.quotes) ? publicData.quotes : [];
+}
+
 function getPriceBucket(quote) {
   const close = Number(quote?.close || 0);
   if (!Number.isFinite(close) || close <= 0) return "unknown";
@@ -339,10 +439,7 @@ async function refreshTickerUniverseQuotes({ rerender = true, force = false } = 
         if (index >= chunks.length) return;
         const chunk = chunks[index];
         try {
-          const data = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(chunk.join(","))}`, {
-            method: "GET",
-          });
-          const quotes = Array.isArray(data.quotes) ? data.quotes : [];
+          const quotes = await fetchTickerQuoteBatch(chunk);
           quotes.forEach((q) => {
             const key = String(q?.label || q?.symbol || "").toUpperCase();
             if (key) bySymbol[key] = q;
