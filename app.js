@@ -98,7 +98,7 @@ const announcedAgents = new Set();
 
 let chatHistory = [];
 let schwabSession = { connected: false };
-let schwabData = { accounts: null, openOrders: null };
+let schwabData = { accounts: null, openOrders: null, accountError: "" };
 let investmentsMarket = { assets: [], updatedAt: null };
 let openingPlaybook = { buckets: [], asOf: null };
 let openingQuotesBySymbol = {};
@@ -195,7 +195,7 @@ async function refreshSchwabSession() {
 
 async function loadSchwabContextData() {
   if (!schwabSession.connected) {
-    schwabData = { accounts: null, openOrders: null };
+    schwabData = { accounts: null, openOrders: null, accountError: "" };
     return;
   }
   const [accountsResult, openOrdersResult] = await Promise.allSettled([
@@ -204,13 +204,15 @@ async function loadSchwabContextData() {
   ]);
 
   const accounts = accountsResult.status === "fulfilled" ? accountsResult.value : null;
+  const accountError =
+    accountsResult.status === "rejected" ? String(accountsResult.reason?.message || "Failed to load Schwab accounts.") : "";
   const openOrders =
     openOrdersResult.status === "fulfilled"
       ? openOrdersResult.value
       : { accountHash: schwabSession.accountHash || null, orders: [], rawCount: 0 };
 
   // Preserve whichever payload succeeds so account visibility isn't lost when orders endpoint fails.
-  schwabData = { accounts, openOrders };
+  schwabData = { accounts, openOrders, accountError };
 }
 
 async function loadInvestmentsMarketData() {
@@ -918,7 +920,12 @@ function renderPortfolioView() {
         </article>
       </section>
       <section class="schwab-grid">
-        ${accountCards || '<article class="schwab-card"><h4>No accounts returned</h4><p class="schwab-card-sub">Your connected session has no account records yet. Try Refresh.</p></article>'}
+        ${
+          accountCards ||
+          `<article class="schwab-card"><h4>No accounts returned</h4><p class="schwab-card-sub">${
+            escapeHtml(schwabData.accountError || "Your connected session has no account records yet. Try Refresh.")
+          }</p></article>`
+        }
       </section>
       <section class="table-wrap">
         <table>
@@ -969,7 +976,7 @@ async function logoutSchwab() {
   await schwabApi("/api/schwab/logout", { method: "POST" });
   chatHistory = [];
   schwabSession = { connected: false };
-  schwabData = { accounts: null, openOrders: null };
+  schwabData = { accounts: null, openOrders: null, accountError: "" };
   updateSchwabChatBadge();
   openTabs.add(SCHWAB_CONNECT_TAB);
   activateTab(SCHWAB_CONNECT_TAB);

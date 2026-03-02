@@ -1041,23 +1041,39 @@ app.get("/schwab/callback", async (req, res) => {
 
   try {
     const tokenBundle = await exchangeCodeForToken(String(code));
+    const accountResult = await schwabApiRequest(tokenBundle, "GET", "/accounts/accountNumbers");
+    if (accountResult.status < 200 || accountResult.status >= 300) {
+      const detail =
+        accountResult.data?.error_description ||
+        accountResult.data?.message ||
+        accountResult.data?.error ||
+        `HTTP ${accountResult.status}`;
+      throw new Error(`Schwab account link failed: ${detail}`);
+    }
+    if (!Array.isArray(accountResult.data) || !accountResult.data.length) {
+      throw new Error(
+        "Schwab account link succeeded but no brokerage accounts were returned for this app authorization."
+      );
+    }
+
     req.session.schwabTokens = tokenBundle;
     req.session.schwabConnected = true;
     req.session.schwabConnectedAt = new Date().toISOString();
+    req.session.accountNumbers = accountResult.data;
+    req.session.primaryAccountNumber = accountResult.data[0]?.accountNumber || null;
+    req.session.primaryAccountHash = accountResult.data[0]?.hashValue || null;
     delete req.session.oauthState;
     delete req.session.oauthStartedAt;
 
-    const accountResult = await schwabRequestWithSession(req.session, "GET", "/accounts/accountNumbers");
-    if (accountResult.status >= 200 && accountResult.status < 300 && Array.isArray(accountResult.data)) {
-      req.session.accountNumbers = accountResult.data;
-      if (accountResult.data[0]) {
-        req.session.primaryAccountNumber = accountResult.data[0].accountNumber || null;
-        req.session.primaryAccountHash = accountResult.data[0].hashValue || null;
-      }
-    }
-
     res.redirect(`${CLIENT_APP_URL}?schwab=connected`);
   } catch (err) {
+    req.session.schwabConnected = false;
+    delete req.session.schwabTokens;
+    delete req.session.accountNumbers;
+    delete req.session.primaryAccountNumber;
+    delete req.session.primaryAccountHash;
+    delete req.session.oauthState;
+    delete req.session.oauthStartedAt;
     res.redirect(`${CLIENT_APP_URL}?schwab=error&reason=${encodeURIComponent(err.message || "OAuth failed")}`);
   }
 });
