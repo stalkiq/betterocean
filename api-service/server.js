@@ -719,6 +719,22 @@ function extractMaxQuantityFromOrder(order) {
   return maxQty;
 }
 
+function extractSchwabErrorMessage(payload, fallbackStatus) {
+  if (!payload) return `Schwab request failed (${fallbackStatus || "unknown"})`;
+  if (typeof payload === "string") return payload;
+  if (payload.error_description) return String(payload.error_description);
+  if (payload.message) return String(payload.message);
+  if (payload.error) return String(payload.error);
+  if (Array.isArray(payload.errors) && payload.errors.length) {
+    const first = payload.errors[0] || {};
+    const title = first.title || first.code || "Schwab rejected the request";
+    const detail = first.detail || first.message || first.source || "";
+    const id = first.id ? ` [id: ${first.id}]` : "";
+    return `${title}${detail ? `: ${detail}` : ""}${id}`;
+  }
+  return `Schwab request failed (${fallbackStatus || "unknown"})`;
+}
+
 app.use((req, res, next) => {
   getOrCreateSession(req, res);
   if (req.method === "OPTIONS") {
@@ -1320,8 +1336,14 @@ app.post(["/schwab/orders", "/api/schwab/orders"], requireSchwabAuth, async (req
     if (result.status >= 200 && result.status < 300) {
       clearSessionCacheByPrefix(req.session, "orders-open:");
       clearSessionCacheByPrefix(req.session, "accounts:");
+      sendJson(res, result.status, { ok: true, result: result.data });
+      return;
     }
-    sendJson(res, result.status, { ok: result.status >= 200 && result.status < 300, result: result.data });
+    sendJson(res, result.status, {
+      ok: false,
+      error: extractSchwabErrorMessage(result.data, result.status),
+      result: result.data,
+    });
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to place order." });
   }

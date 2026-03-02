@@ -1078,6 +1078,16 @@ function wireTradeTicketForm({ formId, statusId, onSuccess }) {
       tradeStatus.className = "trade-status error";
       return;
     }
+    if (symbol === "APPL") {
+      tradeStatus.textContent = "Symbol APPL not found. Did you mean AAPL?";
+      tradeStatus.className = "trade-status error";
+      return;
+    }
+    if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(symbol)) {
+      tradeStatus.textContent = "Use a valid ticker symbol (example: AAPL, SPY, BRK.B).";
+      tradeStatus.className = "trade-status error";
+      return;
+    }
     if (!Number.isFinite(quantity) || quantity <= 0) {
       tradeStatus.textContent = "Quantity must be greater than zero.";
       tradeStatus.className = "trade-status error";
