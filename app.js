@@ -593,12 +593,12 @@ function formatPercent(pct) {
 }
 
 function getSignalFromDelta(pct) {
-  if (!Number.isFinite(pct)) return { label: "No Data", className: "neutral" };
-  if (pct >= 2) return { label: "Strong Bull", className: "bull-strong" };
-  if (pct >= 0.4) return { label: "Bullish", className: "bull" };
-  if (pct <= -2) return { label: "Strong Bear", className: "bear-strong" };
-  if (pct <= -0.4) return { label: "Bearish", className: "bear" };
-  return { label: "Neutral", className: "neutral" };
+  if (!Number.isFinite(pct)) return { label: "Need More Data", className: "neutral" };
+  if (pct >= 2) return { label: "Strong Up Trend", className: "bull-strong" };
+  if (pct >= 0.4) return { label: "Looks Strong", className: "bull" };
+  if (pct <= -2) return { label: "Strong Down Trend", className: "bear-strong" };
+  if (pct <= -0.4) return { label: "Looks Weak", className: "bear" };
+  return { label: "Mixed", className: "neutral" };
 }
 
 function renderSignalPill(pct) {
@@ -608,15 +608,65 @@ function renderSignalPill(pct) {
 
 function toSignalBadge(signal = "neutral") {
   const clean = String(signal || "neutral").toLowerCase();
-  if (clean === "bullish") return '<span class="signal-pill bull">Bullish</span>';
-  if (clean === "bearish") return '<span class="signal-pill bear">Bearish</span>';
-  return '<span class="signal-pill neutral">Neutral</span>';
+  if (clean === "bullish") return '<span class="signal-pill bull">Looks Strong</span>';
+  if (clean === "bearish") return '<span class="signal-pill bear">Looks Weak</span>';
+  return '<span class="signal-pill neutral">Mixed</span>';
 }
 
 function renderListItems(items) {
   const list = Array.isArray(items) ? items.filter(Boolean) : [];
   if (!list.length) return '<li class="settings-desc">No items.</li>';
   return list.map((item) => `<li>${escapeHtml(String(item))}</li>`).join("");
+}
+
+function getIntradayRangePercent(quote) {
+  const high = Number(quote?.high || 0);
+  const low = Number(quote?.low || 0);
+  const close = Number(quote?.close || 0);
+  if (!Number.isFinite(high) || !Number.isFinite(low) || !Number.isFinite(close) || close <= 0) return null;
+  return ((high - low) / close) * 100;
+}
+
+function getEaseScoreForTicker(symbol, quote) {
+  if (!quote || quote.unavailable) return -999;
+  const pct = Math.abs(Number(getOpenDeltaPercent(quote) || 0));
+  const rangePct = Number(getIntradayRangePercent(quote) || 0);
+  const status = getSignalKeyForQuote(quote);
+  const directionalBonus = status === "neutral" ? 0 : status === "no-data" ? -4 : 2;
+  const cleanRangeBonus = rangePct >= 0.8 && rangePct <= 6 ? 2 : rangePct > 6 ? -1 : 0;
+  const report = tickerIntelState.reportCache[symbol];
+  const confidenceBonus =
+    report?.confidence === "high" ? 2 : report?.confidence === "medium" ? 1 : report?.confidence === "low" ? 0 : 0;
+  return pct * 2 + directionalBonus + cleanRangeBonus + confidenceBonus;
+}
+
+function looksLikeBigNews(title) {
+  const t = String(title || "").toLowerCase();
+  return /(merger|acquisition|lawsuit|investigation|ceo|resign|layoff|guidance|downgrade|upgrade|tariff|attack|probe)/.test(
+    t
+  );
+}
+
+function looksLikeEarningsToday(title) {
+  const t = String(title || "").toLowerCase();
+  return /earnings|quarterly results|guidance/.test(t) && /today|this morning|after close|before open|q[1-4]/.test(t);
+}
+
+function getWarningChipsForTicker(symbol, quote) {
+  const chips = [];
+  const pct = Math.abs(Number(getOpenDeltaPercent(quote) || 0));
+  const rangePct = Number(getIntradayRangePercent(quote) || 0);
+  if (pct >= 2 || rangePct >= 5) chips.push({ text: "High risk", className: "warn-high-risk" });
+
+  const report = tickerIntelState.reportCache[symbol];
+  const headlines = Array.isArray(report?.newsUsed) ? report.newsUsed : [];
+  if (headlines.some((h) => looksLikeEarningsToday(h?.title))) {
+    chips.push({ text: "Earnings today", className: "warn-earnings" });
+  }
+  if (headlines.some((h) => looksLikeBigNews(h?.title))) {
+    chips.push({ text: "Big news", className: "warn-big-news" });
+  }
+  return chips.slice(0, 3);
 }
 
 function getFilteredTickerUniverse() {
@@ -627,13 +677,14 @@ function getFilteredTickerUniverse() {
   const priceFilter = tickerIntelState.priceFilter || "all";
   const symbols = tickerIntelState.universe.length ? tickerIntelState.universe : DEFAULT_TICKER_WATCHLIST;
 
-  return symbols.filter((symbol) => {
+  const filtered = symbols.filter((symbol) => {
     if (search && !symbol.includes(search)) return false;
     const quote = tickerIntelState.quoteBySymbol[symbol];
     if (priceFilter !== "all" && getPriceBucket(quote) !== priceFilter) return false;
     if (signalFilter !== "all" && getSignalKeyForQuote(quote) !== signalFilter) return false;
     return true;
   });
+  return filtered.sort((a, b) => getEaseScoreForTicker(b, tickerIntelState.quoteBySymbol[b]) - getEaseScoreForTicker(a, tickerIntelState.quoteBySymbol[a]));
 }
 
 function getTickerFilterCounts() {
@@ -672,6 +723,16 @@ function renderTickerIntelView() {
       const quote = tickerIntelState.quoteBySymbol[symbol];
       const pct = quote ? getOpenDeltaPercent(quote) : null;
       const signalPill = quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">No Data</span>';
+      const signal = getSignalFromDelta(pct);
+      const rowToneClass =
+        signal.className === "bull-strong" || signal.className === "bull"
+          ? "tone-strong"
+          : signal.className === "bear-strong" || signal.className === "bear"
+            ? "tone-weak"
+            : "tone-mixed";
+      const warningChips = getWarningChipsForTicker(symbol, quote)
+        .map((chip) => `<span class="warning-chip ${chip.className}">${escapeHtml(chip.text)}</span>`)
+        .join("");
       const trendClass = !Number.isFinite(pct)
         ? "value-flat"
         : pct > 0
@@ -680,12 +741,13 @@ function renderTickerIntelView() {
             ? "value-down"
             : "value-flat";
       return `
-      <button type="button" class="ticker-item ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
+      <button type="button" class="ticker-item ${rowToneClass} ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
         <span class="ticker-item-top"><span class="ticker-item-symbol">${symbol}</span>${signalPill}</span>
         <span class="ticker-item-bottom">
           <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
           <span class="${trendClass}">${formatPercent(pct)}</span>
         </span>
+        ${warningChips ? `<span class="ticker-warning-row">${warningChips}</span>` : ""}
       </button>
     `;
     })
@@ -696,13 +758,13 @@ function renderTickerIntelView() {
   const quoteSummary = quote
     ? `
       <section class="ticker-quote-grid">
-        <article class="schwab-metric-card"><h4>Last</h4><div class="schwab-metric-value small">${renderPriceCell(
+        <article class="schwab-metric-card"><h4>Current Price</h4><div class="schwab-metric-value small">${renderPriceCell(
           quote.close
         )}</div></article>
-        <article class="schwab-metric-card"><h4>Open Δ%</h4><div class="schwab-metric-value small ${
+        <article class="schwab-metric-card"><h4>Today Change</h4><div class="schwab-metric-value small ${
           openDelta > 0 ? "value-up" : openDelta < 0 ? "value-down" : "value-flat"
         }">${formatPercent(openDelta)}</div></article>
-        <article class="schwab-metric-card"><h4>Range</h4><div class="schwab-metric-value small">${renderPriceCell(
+        <article class="schwab-metric-card"><h4>Today Range</h4><div class="schwab-metric-value small">${renderPriceCell(
           quote.low
         )} - ${renderPriceCell(quote.high)}</div></article>
       </section>
@@ -732,28 +794,28 @@ function renderTickerIntelView() {
     bullDebate.thesis || bearDebate.thesis || refereeDebate.summary
       ? `
       <section class="schwab-card">
-        <h4>Multi-Agent Debate</h4>
-        <p class="schwab-card-sub">Bull Analyst vs Bear Analyst with Referee synthesis.</p>
+        <h4>Two-Sided AI View</h4>
+        <p class="schwab-card-sub">One AI explains the upside, one explains the downside, and a final AI gives the balanced call.</p>
         <section class="ticker-report-grid">
           <article class="schwab-card">
-            <h4>Bull Analyst</h4>
+            <h4>Upside View</h4>
             <p class="schwab-card-sub">${escapeHtml(bullDebate.thesis || "No bullish thesis generated.")}</p>
             <ul class="ticker-bullets">${renderListItems(bullDebate.points)}</ul>
           </article>
           <article class="schwab-card">
-            <h4>Bear Analyst</h4>
+            <h4>Downside View</h4>
             <p class="schwab-card-sub">${escapeHtml(bearDebate.thesis || "No bearish thesis generated.")}</p>
             <ul class="ticker-bullets">${renderListItems(bearDebate.points)}</ul>
           </article>
           <article class="schwab-card">
-            <h4>Referee</h4>
+            <h4>Balanced Summary</h4>
             <p class="schwab-card-sub">${escapeHtml(
               refereeDebate.summary || "No referee summary available."
             )}</p>
             <ul class="ticker-bullets">
-              <li>Verdict: ${escapeHtml(String(refereeDebate.verdict || report.signal || "neutral"))}</li>
-              <li>Action bias: ${escapeHtml(String(refereeDebate.actionBias || "balanced"))}</li>
-              <li>Confidence: ${escapeHtml(String(refereeDebate.confidence || report.confidence || "medium"))}</li>
+              <li>Overall call: ${escapeHtml(String(refereeDebate.verdict || report.signal || "neutral"))}</li>
+              <li>Suggested stance: ${escapeHtml(String(refereeDebate.actionBias || "balanced"))}</li>
+              <li>How sure AI is: ${escapeHtml(String(refereeDebate.confidence || report.confidence || "medium"))}</li>
             </ul>
           </article>
         </section>
@@ -775,32 +837,32 @@ function renderTickerIntelView() {
         </div>
         <div class="ticker-report-signal">
           ${toSignalBadge(report.signal)}
-          <span class="settings-desc">Confidence: ${escapeHtml(report.confidence || "medium")}</span>
+          <span class="settings-desc">How sure we are: ${escapeHtml(report.confidence || "medium")}</span>
         </div>
       </header>
       ${quoteSummary}
       ${debateHtml}
       <section class="ticker-report-grid">
-        <article class="schwab-card"><h4>Bullish Case</h4><ul class="ticker-bullets">${renderListItems(
+        <article class="schwab-card"><h4>Why It Could Go Up</h4><ul class="ticker-bullets">${renderListItems(
           report.bullishFactors
         )}</ul></article>
-        <article class="schwab-card"><h4>Bearish Case</h4><ul class="ticker-bullets">${renderListItems(
+        <article class="schwab-card"><h4>Why It Could Go Down</h4><ul class="ticker-bullets">${renderListItems(
           report.bearishFactors
         )}</ul></article>
-        <article class="schwab-card"><h4>Neutral / Watch</h4><ul class="ticker-bullets">${renderListItems(
+        <article class="schwab-card"><h4>What To Watch</h4><ul class="ticker-bullets">${renderListItems(
           report.neutralFactors
         )}</ul></article>
-        <article class="schwab-card"><h4>Catalysts</h4><ul class="ticker-bullets">${renderListItems(
+        <article class="schwab-card"><h4>Upcoming Events</h4><ul class="ticker-bullets">${renderListItems(
           report.catalystWatch
         )}</ul></article>
       </section>
       <section class="schwab-card">
-        <h4>Risk Flags</h4>
+        <h4>Risk Warnings</h4>
         <ul class="ticker-bullets">${renderListItems(report.riskFlags)}</ul>
         <p class="schwab-card-sub">${escapeHtml(report.narrativeSummary || "")}</p>
       </section>
       <section class="schwab-card">
-        <h4>Recent Headlines Used By AI</h4>
+        <h4>Recent News Used By AI</h4>
         <ul class="ticker-news-list">${newsHtml || '<li class="settings-desc">No recent headlines available.</li>'}</ul>
       </section>
     `;
@@ -809,7 +871,7 @@ function renderTickerIntelView() {
     <section class="ticker-intel-layout">
       <aside class="ticker-intel-list">
         <h4>Market Coverage</h4>
-        <p class="settings-desc">Showing ${filtered.length}/${totalUniverse} symbols • quotes loaded ${
+        <p class="settings-desc">Showing ${filtered.length}/${totalUniverse} symbols • sorted by easiest choices first • quotes loaded ${
           tickerIntelState.loadedQuotes
         }/${totalUniverse}${tickerIntelState.loadingUniverse ? " (updating...)" : ""}</p>
         <div class="ticker-filters">
@@ -817,11 +879,11 @@ function renderTickerIntelView() {
             tickerIntelState.search || ""
           )}" />
           <select id="tickerSignalFilter" class="trade-input">
-            <option value="all" ${tickerIntelState.signalFilter === "all" ? "selected" : ""}>All Signals (${counts.total})</option>
-            <option value="bullish" ${tickerIntelState.signalFilter === "bullish" ? "selected" : ""}>Bullish (${counts.signal.bullish})</option>
-            <option value="bearish" ${tickerIntelState.signalFilter === "bearish" ? "selected" : ""}>Bearish (${counts.signal.bearish})</option>
-            <option value="neutral" ${tickerIntelState.signalFilter === "neutral" ? "selected" : ""}>Neutral (${counts.signal.neutral})</option>
-            <option value="no-data" ${tickerIntelState.signalFilter === "no-data" ? "selected" : ""}>No Data (${counts.signal["no-data"]})</option>
+            <option value="all" ${tickerIntelState.signalFilter === "all" ? "selected" : ""}>All Ratings (${counts.total})</option>
+            <option value="bullish" ${tickerIntelState.signalFilter === "bullish" ? "selected" : ""}>Looks Strong (${counts.signal.bullish})</option>
+            <option value="bearish" ${tickerIntelState.signalFilter === "bearish" ? "selected" : ""}>Looks Weak (${counts.signal.bearish})</option>
+            <option value="neutral" ${tickerIntelState.signalFilter === "neutral" ? "selected" : ""}>Mixed (${counts.signal.neutral})</option>
+            <option value="no-data" ${tickerIntelState.signalFilter === "no-data" ? "selected" : ""}>Need More Data (${counts.signal["no-data"]})</option>
           </select>
           <select id="tickerPriceFilter" class="trade-input">
             <option value="all" ${tickerIntelState.priceFilter === "all" ? "selected" : ""}>All Prices (${counts.total})</option>

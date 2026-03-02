@@ -565,6 +565,18 @@ td {
  color: #f1f6ff;
 }
 
+.ticker-item.tone-strong {
+  border-left: 4px solid #3ca86f;
+}
+
+.ticker-item.tone-weak {
+  border-left: 4px solid #be5f72;
+}
+
+.ticker-item.tone-mixed {
+  border-left: 4px solid #7d8fb2;
+}
+
 .ticker-item-symbol {
  font-weight: 700;
  letter-spacing: 0.03em;
@@ -584,6 +596,42 @@ td {
  gap: 8px;
  font-size: 12px;
  color: #bdd0f4;
+}
+
+.ticker-warning-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.warning-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid #4a5f8d;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.warning-chip.warn-high-risk {
+  border-color: #be5f72;
+  color: #ffd7df;
+  background: rgba(139, 56, 74, 0.28);
+}
+
+.warning-chip.warn-earnings {
+  border-color: #c39b45;
+  color: #ffe8b6;
+  background: rgba(125, 94, 32, 0.3);
+}
+
+.warning-chip.warn-big-news {
+  border-color: #5b8dd4;
+  color: #d4e7ff;
+  background: rgba(56, 94, 150, 0.28);
 }
 
 .ticker-intel-report {
