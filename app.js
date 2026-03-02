@@ -198,15 +198,19 @@ async function loadSchwabContextData() {
     schwabData = { accounts: null, openOrders: null };
     return;
   }
-  try {
-    const [accounts, openOrders] = await Promise.all([
-      schwabApi("/api/schwab/accounts", { method: "GET" }),
-      schwabApi("/api/schwab/orders/open?maxResults=25", { method: "GET" }),
-    ]);
-    schwabData = { accounts, openOrders };
-  } catch {
-    schwabData = { accounts: null, openOrders: null };
-  }
+  const [accountsResult, openOrdersResult] = await Promise.allSettled([
+    schwabApi("/api/schwab/accounts", { method: "GET" }),
+    schwabApi("/api/schwab/orders/open?maxResults=25", { method: "GET" }),
+  ]);
+
+  const accounts = accountsResult.status === "fulfilled" ? accountsResult.value : null;
+  const openOrders =
+    openOrdersResult.status === "fulfilled"
+      ? openOrdersResult.value
+      : { accountHash: schwabSession.accountHash || null, orders: [], rawCount: 0 };
+
+  // Preserve whichever payload succeeds so account visibility isn't lost when orders endpoint fails.
+  schwabData = { accounts, openOrders };
 }
 
 async function loadInvestmentsMarketData() {
