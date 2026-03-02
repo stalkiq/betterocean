@@ -21,6 +21,7 @@ const INVESTMENTS_TAB = "Investments";
 const TICKER_INTEL_TAB = "Ticker Intel";
 const TIME_TAB = "Time";
 const HOME_TAB = SCHWAB_CONNECT_TAB;
+const SCHWAB_FUNDING_URL = "https://www.schwab.com/fund-your-account";
 const RESPONSE_STYLE_PROMPT =
   "Reply in 3-6 concise bullet points with short, scannable lines. Keep spacing clean and avoid long paragraphs.";
 const UI_PREFS_KEY = "bo_ui_prefs_v1";
@@ -860,6 +861,11 @@ function renderPortfolioView() {
 
   const accounts = getLinkedAccounts();
   const positions = getAllPositions();
+  const totalBuyingPower = accounts.reduce((sum, account) => {
+    const value = Number(account?.securitiesAccount?.currentBalances?.buyingPower || 0);
+    return sum + (Number.isFinite(value) ? value : 0);
+  }, 0);
+  const fundingRequired = totalBuyingPower <= 0;
 
   const accountCards = accounts
     .map((account) => {
@@ -919,7 +925,28 @@ function renderPortfolioView() {
             positions.reduce((sum, p) => sum + Number(p?.marketValue || 0), 0)
           )}</div>
         </article>
+        <article class="schwab-metric-card">
+          <h4>Available Buying Power</h4>
+          <div class="schwab-metric-value small">${formatMoney(totalBuyingPower)}</div>
+        </article>
       </section>
+      ${
+        fundingRequired
+          ? `
+      <section class="schwab-card funding-required-card">
+        <h4>Funding Required Before Trading</h4>
+        <p class="schwab-card-sub">
+          Your available buying power is ${formatMoney(
+            totalBuyingPower
+          )}. Add funds in Schwab, then refresh this page to place a live order.
+        </p>
+        <div class="schwab-actions">
+          <a class="schwab-btn schwab-btn-primary" href="${SCHWAB_FUNDING_URL}" target="_blank" rel="noopener noreferrer">Add Funds in Schwab</a>
+        </div>
+      </section>
+      `
+          : ""
+      }
       <section class="schwab-grid">
         ${
           accountCards ||
@@ -976,6 +1003,10 @@ function renderPortfolioView() {
             <button type="submit" class="schwab-btn schwab-btn-primary">Submit Order</button>
           </form>
           <div class="trade-status" id="portfolioTradeTicketStatus"></div>
+          <div class="trade-funding-hint" id="portfolioTradeFundingHint" hidden>
+            Need to fund first? Add cash at Schwab, then return and retry.
+            <a href="${SCHWAB_FUNDING_URL}" target="_blank" rel="noopener noreferrer">Funding steps</a>
+          </div>
         </article>
       </section>
       `
@@ -987,6 +1018,7 @@ function renderPortfolioView() {
     wireTradeTicketForm({
       formId: "portfolioTradeTicketForm",
       statusId: "portfolioTradeTicketStatus",
+      fundingHintId: "portfolioTradeFundingHint",
       onSuccess: () => renderPortfolioView(),
     });
     const symbolInput = workspaceTableWrap.querySelector("[data-trade-symbol]");
@@ -1058,14 +1090,27 @@ function buildEquityMarketOrder({ side, symbol, quantity }) {
   };
 }
 
-function wireTradeTicketForm({ formId, statusId, onSuccess }) {
+function isFundingRelatedOrderError(message) {
+  const normalized = String(message || "").toLowerCase();
+  return (
+    normalized.includes("insufficient") ||
+    normalized.includes("buying power") ||
+    normalized.includes("insufficient funds") ||
+    normalized.includes("not enough") ||
+    normalized.includes("cash")
+  );
+}
+
+function wireTradeTicketForm({ formId, statusId, fundingHintId, onSuccess }) {
   const tradeForm = document.getElementById(formId);
   const tradeStatus = document.getElementById(statusId);
+  const fundingHint = fundingHintId ? document.getElementById(fundingHintId) : null;
   if (!tradeForm || !tradeStatus) return;
 
   tradeForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     if (!schwabSession.connected) return;
+    if (fundingHint) fundingHint.hidden = true;
 
     const side = String(tradeForm.querySelector("[data-trade-side]")?.value || "BUY").toUpperCase();
     const symbol = String(tradeForm.querySelector("[data-trade-symbol]")?.value || "")
@@ -1117,6 +1162,9 @@ function wireTradeTicketForm({ formId, statusId, onSuccess }) {
     } catch (error) {
       tradeStatus.textContent = error.message || "Order submission failed.";
       tradeStatus.className = "trade-status error";
+      if (fundingHint && isFundingRelatedOrderError(error.message)) {
+        fundingHint.hidden = false;
+      }
     }
   });
 }
@@ -1529,6 +1577,10 @@ function renderSchwabConnectView() {
             </button>
           </form>
           <div class="trade-status" id="tradeTicketStatus"></div>
+          <div class="trade-funding-hint" id="tradeFundingHint" hidden>
+            If Schwab rejects this for buying power, fund your account first and retry.
+            <a href="${SCHWAB_FUNDING_URL}" target="_blank" rel="noopener noreferrer">Funding steps</a>
+          </div>
         </article>
       </section>
     </div>
@@ -1547,7 +1599,11 @@ function renderSchwabConnectView() {
     });
   }
 
-  wireTradeTicketForm({ formId: "tradeTicketForm", statusId: "tradeTicketStatus" });
+  wireTradeTicketForm({
+    formId: "tradeTicketForm",
+    statusId: "tradeTicketStatus",
+    fundingHintId: "tradeFundingHint",
+  });
 }
 
 function renderSettingsView() {
