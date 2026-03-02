@@ -724,6 +724,42 @@ function renderTickerIntelView() {
         )
         .join("")
     : "";
+  const debate = report?.debate || {};
+  const bullDebate = debate.bullAnalyst || {};
+  const bearDebate = debate.bearAnalyst || {};
+  const refereeDebate = debate.referee || {};
+  const debateHtml =
+    bullDebate.thesis || bearDebate.thesis || refereeDebate.summary
+      ? `
+      <section class="schwab-card">
+        <h4>Multi-Agent Debate</h4>
+        <p class="schwab-card-sub">Bull Analyst vs Bear Analyst with Referee synthesis.</p>
+        <section class="ticker-report-grid">
+          <article class="schwab-card">
+            <h4>Bull Analyst</h4>
+            <p class="schwab-card-sub">${escapeHtml(bullDebate.thesis || "No bullish thesis generated.")}</p>
+            <ul class="ticker-bullets">${renderListItems(bullDebate.points)}</ul>
+          </article>
+          <article class="schwab-card">
+            <h4>Bear Analyst</h4>
+            <p class="schwab-card-sub">${escapeHtml(bearDebate.thesis || "No bearish thesis generated.")}</p>
+            <ul class="ticker-bullets">${renderListItems(bearDebate.points)}</ul>
+          </article>
+          <article class="schwab-card">
+            <h4>Referee</h4>
+            <p class="schwab-card-sub">${escapeHtml(
+              refereeDebate.summary || "No referee summary available."
+            )}</p>
+            <ul class="ticker-bullets">
+              <li>Verdict: ${escapeHtml(String(refereeDebate.verdict || report.signal || "neutral"))}</li>
+              <li>Action bias: ${escapeHtml(String(refereeDebate.actionBias || "balanced"))}</li>
+              <li>Confidence: ${escapeHtml(String(refereeDebate.confidence || report.confidence || "medium"))}</li>
+            </ul>
+          </article>
+        </section>
+      </section>
+    `
+      : "";
 
   const reportHtml = tickerIntelState.error
     ? `<div class="do-error"><strong>Error</strong><p>${escapeHtml(tickerIntelState.error)}</p></div>`
@@ -743,6 +779,7 @@ function renderTickerIntelView() {
         </div>
       </header>
       ${quoteSummary}
+      ${debateHtml}
       <section class="ticker-report-grid">
         <article class="schwab-card"><h4>Bullish Case</h4><ul class="ticker-bullets">${renderListItems(
           report.bullishFactors

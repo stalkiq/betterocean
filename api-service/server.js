@@ -528,6 +528,30 @@ function buildTickerReportFallback(symbol, quote, news) {
     catalystWatch: ["Earnings updates", "Guidance changes", "Executive leadership headlines", "New partnerships or M&A"],
     riskFlags: ["Headline volatility can reverse intraday direction quickly."],
     narrativeSummary: "Combine this with your own risk controls and position sizing.",
+    debate: {
+      bullAnalyst: {
+        thesis: "Upside case is limited without stronger confirmation.",
+        points:
+          signal === "bullish"
+            ? ["Price is above the open, which supports a short-term bullish bias."]
+            : ["No clear bullish breakout is visible from current price action alone."],
+        confidence: "low",
+      },
+      bearAnalyst: {
+        thesis: "Downside case requires confirmation from continued weakness.",
+        points:
+          signal === "bearish"
+            ? ["Price is below the open, which signals near-term downside pressure."]
+            : ["No clear bearish breakdown is visible from current price action alone."],
+        confidence: "low",
+      },
+      referee: {
+        summary: "Fallback debate mode uses limited inputs. Treat as directional context only.",
+        verdict: "balanced",
+        actionBias: "balanced",
+        confidence: "low",
+      },
+    },
     newsUsed: news.map((item) => ({
       title: item.title,
       link: item.link,
@@ -538,6 +562,70 @@ function buildTickerReportFallback(symbol, quote, news) {
     source: "fallback",
     asOf: new Date().toISOString(),
   };
+}
+
+function parseJsonFromModelContent(rawContent) {
+  const content = String(rawContent || "").trim();
+  if (!content) return null;
+  const match = content.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[0]);
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeConfidence(value, fallback = "medium") {
+  const clean = String(value || "").toLowerCase();
+  return ["high", "medium", "low"].includes(clean) ? clean : fallback;
+}
+
+function sanitizeSignal(value, fallback = "neutral") {
+  const clean = String(value || "").toLowerCase();
+  return ["bullish", "bearish", "neutral"].includes(clean) ? clean : fallback;
+}
+
+function sanitizeArray(value, maxItems = 6) {
+  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean).slice(0, maxItems) : [];
+}
+
+function sanitizeActionBias(value, fallback = "balanced") {
+  const clean = String(value || "").toLowerCase();
+  return ["lean-bullish", "lean-bearish", "balanced"].includes(clean) ? clean : fallback;
+}
+
+async function gradientStructuredJson({ completionsUrl, key, model, systemPrompt, userPrompt }) {
+  const upstream = await postJson(
+    completionsUrl,
+    {
+      model,
+      stream: false,
+      messages: [
+        {
+          role: "system",
+          content: systemPrompt,
+        },
+        { role: "user", content: userPrompt },
+      ],
+    },
+    {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${key}`,
+    }
+  );
+
+  if (upstream.status < 200 || upstream.status >= 300) {
+    const err = new Error(`Gradient returned ${upstream.status}`);
+    err.status = upstream.status;
+    throw err;
+  }
+
+  const parsed = parseJsonFromModelContent(upstream.data?.choices?.[0]?.message?.content);
+  if (!parsed) {
+    throw new Error("Gradient response did not include valid JSON.");
+  }
+  return parsed;
 }
 
 async function buildTickerDeepDiveReport(symbol) {
@@ -561,91 +649,145 @@ async function buildTickerDeepDiveReport(symbol) {
 
   const base = endpoint.replace(/\/+$/, "");
   const completionsUrl = base.includes("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
-  const prompt = `
-You are a financial research analyst generating a concise, structured ticker deep-dive.
-
+  const model = process.env.GRADIENT_MODEL || "openai-gpt-oss-120b";
+  const sharedContext = `
 Ticker: ${safeSymbol}
 Quote JSON:
 ${JSON.stringify(quote || {}, null, 2)}
 
 Recent news JSON:
 ${JSON.stringify(news, null, 2)}
+`;
 
-Return STRICT JSON only with this exact shape:
+  try {
+    const [bullRaw, bearRaw] = await Promise.all([
+      gradientStructuredJson({
+        completionsUrl,
+        key,
+        model,
+        systemPrompt:
+          "You are Bull Analyst. Build the strongest bullish case using only provided inputs. Return strict JSON only.",
+        userPrompt: `
+${sharedContext}
+
+Return STRICT JSON:
+{
+  "thesis": "1-2 sentence bullish thesis",
+  "points": ["string", "string", "string"],
+  "risks": ["string", "string"],
+  "confidence": "high|medium|low"
+}
+
+Rules:
+- Use only the provided quote + headlines.
+- No markdown, no extra text.
+`,
+      }),
+      gradientStructuredJson({
+        completionsUrl,
+        key,
+        model,
+        systemPrompt:
+          "You are Bear Analyst. Build the strongest bearish case using only provided inputs. Return strict JSON only.",
+        userPrompt: `
+${sharedContext}
+
+Return STRICT JSON:
+{
+  "thesis": "1-2 sentence bearish thesis",
+  "points": ["string", "string", "string"],
+  "risks": ["string", "string"],
+  "confidence": "high|medium|low"
+}
+
+Rules:
+- Use only the provided quote + headlines.
+- No markdown, no extra text.
+`,
+      }),
+    ]);
+
+    const bullAnalyst = {
+      thesis: String(bullRaw?.thesis || "").trim(),
+      points: sanitizeArray(bullRaw?.points, 6),
+      risks: sanitizeArray(bullRaw?.risks, 6),
+      confidence: sanitizeConfidence(bullRaw?.confidence, "medium"),
+    };
+    const bearAnalyst = {
+      thesis: String(bearRaw?.thesis || "").trim(),
+      points: sanitizeArray(bearRaw?.points, 6),
+      risks: sanitizeArray(bearRaw?.risks, 6),
+      confidence: sanitizeConfidence(bearRaw?.confidence, "medium"),
+    };
+
+    const refereeRaw = await gradientStructuredJson({
+      completionsUrl,
+      key,
+      model,
+      systemPrompt:
+        "You are Referee Analyst. Synthesize bull and bear arguments into a balanced investment view. Return strict JSON only.",
+      userPrompt: `
+${sharedContext}
+
+Bull Analyst JSON:
+${JSON.stringify(bullAnalyst, null, 2)}
+
+Bear Analyst JSON:
+${JSON.stringify(bearAnalyst, null, 2)}
+
+Return STRICT JSON:
 {
   "signal": "bullish|bearish|neutral",
   "confidence": "high|medium|low",
   "overview": "2-4 sentence high-level view",
-  "bullishFactors": ["string", "string"],
-  "bearishFactors": ["string", "string"],
   "neutralFactors": ["string", "string"],
   "catalystWatch": ["string", "string"],
   "riskFlags": ["string", "string"],
-  "narrativeSummary": "1-2 sentence summary"
+  "narrativeSummary": "1-2 sentence summary",
+  "verdict": "1 sentence final call",
+  "actionBias": "lean-bullish|lean-bearish|balanced"
 }
 
 Rules:
-- Ground reasoning in the provided quote + headlines.
-- Mention concrete drivers when available: products, partnerships, acquisitions, leadership changes, legal/regulatory events, protests, demand trends.
-- Do not fabricate numbers or events not in the inputs.
-- Keep each bullet concise and decision-useful.
-`;
+- Ground synthesis in the provided inputs and both analyst arguments.
+- No markdown, no extra text.
+`,
+    });
 
-  const upstream = await postJson(
-    completionsUrl,
-    {
-      model: process.env.GRADIENT_MODEL || "openai-gpt-oss-120b",
-      stream: false,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a disciplined equity analyst. Return strict JSON only. No markdown, no extra text.",
+    return {
+      symbol: safeSymbol,
+      signal: sanitizeSignal(refereeRaw?.signal, "neutral"),
+      confidence: sanitizeConfidence(refereeRaw?.confidence, "medium"),
+      overview: String(refereeRaw?.overview || "").trim(),
+      bullishFactors: bullAnalyst.points,
+      bearishFactors: bearAnalyst.points,
+      neutralFactors: sanitizeArray(refereeRaw?.neutralFactors, 6),
+      catalystWatch: sanitizeArray(refereeRaw?.catalystWatch, 6),
+      riskFlags: sanitizeArray(refereeRaw?.riskFlags, 6),
+      narrativeSummary: String(refereeRaw?.narrativeSummary || "").trim(),
+      debate: {
+        bullAnalyst,
+        bearAnalyst,
+        referee: {
+          summary: String(refereeRaw?.verdict || "").trim(),
+          verdict: sanitizeSignal(refereeRaw?.signal, "neutral"),
+          actionBias: sanitizeActionBias(refereeRaw?.actionBias, "balanced"),
+          confidence: sanitizeConfidence(refereeRaw?.confidence, "medium"),
         },
-        { role: "user", content: prompt },
-      ],
-    },
-    {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${key}`,
-    }
-  );
-
-  if (upstream.status < 200 || upstream.status >= 300) {
+      },
+      newsUsed: news.map((item) => ({
+        title: item.title,
+        link: item.link,
+        pubDate: item.pubDate || "",
+        source: item.source || "",
+      })),
+      quote: quote || null,
+      source: "gradient-multi-agent",
+      asOf: new Date().toISOString(),
+    };
+  } catch {
     return buildTickerReportFallback(safeSymbol, quote, news);
   }
-
-  const content = String(upstream.data?.choices?.[0]?.message?.content || "").trim();
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    return buildTickerReportFallback(safeSymbol, quote, news);
-  }
-  const parsed = JSON.parse(jsonMatch[0]);
-  return {
-    symbol: safeSymbol,
-    signal: ["bullish", "bearish", "neutral"].includes(String(parsed.signal || "").toLowerCase())
-      ? String(parsed.signal).toLowerCase()
-      : "neutral",
-    confidence: ["high", "medium", "low"].includes(String(parsed.confidence || "").toLowerCase())
-      ? String(parsed.confidence).toLowerCase()
-      : "medium",
-    overview: String(parsed.overview || "").trim(),
-    bullishFactors: Array.isArray(parsed.bullishFactors) ? parsed.bullishFactors.map(String).slice(0, 6) : [],
-    bearishFactors: Array.isArray(parsed.bearishFactors) ? parsed.bearishFactors.map(String).slice(0, 6) : [],
-    neutralFactors: Array.isArray(parsed.neutralFactors) ? parsed.neutralFactors.map(String).slice(0, 6) : [],
-    catalystWatch: Array.isArray(parsed.catalystWatch) ? parsed.catalystWatch.map(String).slice(0, 6) : [],
-    riskFlags: Array.isArray(parsed.riskFlags) ? parsed.riskFlags.map(String).slice(0, 6) : [],
-    narrativeSummary: String(parsed.narrativeSummary || "").trim(),
-    newsUsed: news.map((item) => ({
-      title: item.title,
-      link: item.link,
-      pubDate: item.pubDate || "",
-      source: item.source || "",
-    })),
-    quote: quote || null,
-    source: "gradient",
-    asOf: new Date().toISOString(),
-  };
 }
 
 function readMessages(req) {
