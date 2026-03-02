@@ -1042,26 +1042,54 @@ app.get("/schwab/callback", async (req, res) => {
   try {
     const tokenBundle = await exchangeCodeForToken(String(code));
     const accountResult = await schwabApiRequest(tokenBundle, "GET", "/accounts/accountNumbers");
-    if (accountResult.status < 200 || accountResult.status >= 300) {
-      const detail =
-        accountResult.data?.error_description ||
-        accountResult.data?.message ||
-        accountResult.data?.error ||
-        `HTTP ${accountResult.status}`;
-      throw new Error(`Schwab account link failed: ${detail}`);
+    let accountNumbers = [];
+
+    if (accountResult.status >= 200 && accountResult.status < 300 && Array.isArray(accountResult.data)) {
+      accountNumbers = accountResult.data;
     }
-    if (!Array.isArray(accountResult.data) || !accountResult.data.length) {
-      throw new Error(
-        "Schwab account link succeeded but no brokerage accounts were returned for this app authorization."
-      );
+
+    // Some Schwab app configurations reject /accounts/accountNumbers but still allow /accounts.
+    if (!accountNumbers.length) {
+      const accountsFallback = await schwabApiRequest(tokenBundle, "GET", "/accounts", { fields: "positions" });
+      if (accountsFallback.status >= 200 && accountsFallback.status < 300 && Array.isArray(accountsFallback.data)) {
+        accountNumbers = accountsFallback.data
+          .map((entry) => ({
+            accountNumber: entry?.securitiesAccount?.accountNumber || entry?.accountNumber || null,
+            hashValue: entry?.securitiesAccount?.hashValue || entry?.hashValue || null,
+          }))
+          .filter((entry) => entry.accountNumber || entry.hashValue);
+      }
+
+      if (!accountNumbers.length) {
+        const primaryDetail =
+          accountResult.data?.error_description ||
+          accountResult.data?.message ||
+          accountResult.data?.error ||
+          (accountResult.data && typeof accountResult.data === "object" ? JSON.stringify(accountResult.data) : "") ||
+          `HTTP ${accountResult.status}`;
+        const fallbackDetail =
+          accountsFallback?.data?.error_description ||
+          accountsFallback?.data?.message ||
+          accountsFallback?.data?.error ||
+          (accountsFallback?.data && typeof accountsFallback.data === "object"
+            ? JSON.stringify(accountsFallback.data)
+            : "") ||
+          `HTTP ${accountsFallback?.status || "unknown"}`;
+        throw new Error(
+          `Schwab account link failed: accountNumbers=${accountResult.status} (${String(primaryDetail).slice(
+            0,
+            220
+          )}), accounts=${accountsFallback?.status || "unknown"} (${String(fallbackDetail).slice(0, 220)})`
+        );
+      }
     }
 
     req.session.schwabTokens = tokenBundle;
     req.session.schwabConnected = true;
     req.session.schwabConnectedAt = new Date().toISOString();
-    req.session.accountNumbers = accountResult.data;
-    req.session.primaryAccountNumber = accountResult.data[0]?.accountNumber || null;
-    req.session.primaryAccountHash = accountResult.data[0]?.hashValue || null;
+    req.session.accountNumbers = accountNumbers;
+    req.session.primaryAccountNumber = accountNumbers[0]?.accountNumber || null;
+    req.session.primaryAccountHash = accountNumbers[0]?.hashValue || null;
     delete req.session.oauthState;
     delete req.session.oauthStartedAt;
 
