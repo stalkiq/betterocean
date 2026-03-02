@@ -46,6 +46,17 @@ body {
   background: linear-gradient(180deg, #0d1628, #0a1221);
 }
 
+.app-shell.market-open .schwab-card,
+.app-shell.market-open .schwab-metric-card,
+.app-shell.market-open .agent-card,
+.app-shell.market-open .agent-hero,
+.app-shell.market-open .table-wrap,
+.app-shell.market-open .ticker-intel-list,
+.app-shell.market-open .ticker-intel-report {
+  border-color: #3e8d68;
+  box-shadow: 0 0 0 1px rgba(95, 189, 138, 0.22);
+}
+
 .icon-rail {
   padding: 10px 8px;
   display: flex;
@@ -506,7 +517,7 @@ td {
 
 .ticker-intel-layout {
  display: grid;
- grid-template-columns: 240px 1fr;
+grid-template-columns: 320px 1fr;
  gap: 12px;
 }
 
@@ -596,6 +607,71 @@ td {
  gap: 8px;
  font-size: 12px;
  color: #bdd0f4;
+}
+
+.ticker-item-context {
+  font-size: 11px;
+  color: #d1e0fb;
+  line-height: 1.35;
+}
+
+.ticker-item-context.muted {
+  color: #9fb3d9;
+}
+
+.ticker-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.meta-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid #4a5f8d;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 7px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.meta-pill.conf-high {
+  border-color: #2f9f6a;
+  color: #b9f1d5;
+  background: rgba(30, 107, 72, 0.26);
+}
+
+.meta-pill.conf-medium,
+.meta-pill.conf-unknown {
+  border-color: #6f84ad;
+  color: #dbe8ff;
+  background: rgba(70, 92, 131, 0.25);
+}
+
+.meta-pill.conf-low {
+  border-color: #9d6e77;
+  color: #ffd8de;
+  background: rgba(122, 64, 78, 0.25);
+}
+
+.meta-pill.risk-low {
+  border-color: #2f9f6a;
+  color: #b9f1d5;
+  background: rgba(30, 107, 72, 0.26);
+}
+
+.meta-pill.risk-medium {
+  border-color: #c39b45;
+  color: #ffe8b6;
+  background: rgba(125, 94, 32, 0.3);
+}
+
+.meta-pill.risk-high {
+  border-color: #be5f72;
+  color: #ffd7df;
+  background: rgba(139, 56, 74, 0.28);
 }
 
 .ticker-warning-row {

@@ -122,6 +122,7 @@ let tickerIntelState = {
   quotesUpdatedAt: 0,
 };
 let marketCountdownTimer = null;
+let marketOpenThemeTimer = null;
 let tickerUniverseQuotesPromise = null;
 let tickerUniverseRequestId = 0;
 let tickerReportRequestId = 0;
@@ -519,6 +520,28 @@ function getEtNowParts() {
   };
 }
 
+function isUsMarketOpenNow() {
+  const nowEt = getEtNowParts();
+  const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const day = weekdayMap[nowEt.weekday] ?? 0;
+  if (day === 0 || day === 6) return false;
+  const minutes = nowEt.hour * 60 + nowEt.minute;
+  const marketOpen = 9 * 60 + 30;
+  const marketClose = 16 * 60;
+  return minutes >= marketOpen && minutes < marketClose;
+}
+
+function applyMarketOpenTheme() {
+  if (!appShell) return;
+  appShell.classList.toggle("market-open", isUsMarketOpenNow());
+}
+
+function startMarketOpenThemeTimer() {
+  applyMarketOpenTheme();
+  if (marketOpenThemeTimer) clearInterval(marketOpenThemeTimer);
+  marketOpenThemeTimer = setInterval(applyMarketOpenTheme, 60000);
+}
+
 function computeNextMarketOpenCountdown() {
   const nowEt = getEtNowParts();
   const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
@@ -803,6 +826,43 @@ function getTickerRankingScore(symbol, quote) {
   return scorecard.overall;
 }
 
+function getSimpleTickerStatus(scorecard) {
+  if (!scorecard || !Number.isFinite(scorecard.overall) || scorecard.overall <= 0) {
+    return "Need more market data to rate this ticker.";
+  }
+  if (scorecard.overall >= 75) return "Strong setup with favorable trend and signals.";
+  if (scorecard.overall >= 60) return "Reasonable setup, but wait for a cleaner entry.";
+  if (scorecard.overall >= 45) return "Mixed setup with both upside and downside pressure.";
+  return "Weak setup right now; risk is elevated.";
+}
+
+function getSimpleTickerWhy(quote, scorecard) {
+  const pct = Number(getOpenDeltaPercent(quote) || 0);
+  const range = Number(getIntradayRangePercent(quote) || 0);
+  if (!Number.isFinite(pct)) return "No reliable price move yet.";
+  if (Math.abs(pct) >= 2) return "Large move today, so this is higher risk.";
+  if (range >= 5) return "Wide price swings today increase uncertainty.";
+  if (scorecard?.riskLevel >= 65) return "Price behavior is fairly stable so far.";
+  if (pct > 0.4) return "Price is moving up with decent momentum.";
+  if (pct < -0.4) return "Price is under pressure today.";
+  return "Price action is mixed and still forming.";
+}
+
+function getRiskLevelTag(scorecard) {
+  const risk = Number(scorecard?.riskLevel || 0);
+  if (risk >= 70) return { text: "Low risk", className: "risk-low" };
+  if (risk >= 45) return { text: "Medium risk", className: "risk-medium" };
+  return { text: "High risk", className: "risk-high" };
+}
+
+function getConfidenceTag(report) {
+  const c = String(report?.confidence || "unknown").toLowerCase();
+  if (c === "high") return { text: "High confidence", className: "conf-high" };
+  if (c === "medium") return { text: "Medium confidence", className: "conf-medium" };
+  if (c === "low") return { text: "Low confidence", className: "conf-low" };
+  return { text: "Confidence unknown", className: "conf-unknown" };
+}
+
 function getFilteredTickerUniverse() {
   const search = String(tickerIntelState.search || "")
     .trim()
@@ -859,8 +919,10 @@ function renderTickerIntelView() {
   const watchlistHtml = filtered
     .map((symbol) => {
       const quote = tickerIntelState.quoteBySymbol[symbol];
+      const reportForSymbol = tickerIntelState.reportCache[symbol] || null;
+      const scorecardForSymbol = getDecisionScorecard(symbol, quote, reportForSymbol);
       const pct = quote ? getOpenDeltaPercent(quote) : null;
-      const signalPill = quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">No Data</span>';
+      const signalPill = quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">Need More Data</span>';
       const signal = getSignalFromDelta(pct);
       const rowToneClass =
         signal.className === "bull-strong" || signal.className === "bull"
@@ -871,6 +933,10 @@ function renderTickerIntelView() {
       const warningChips = getWarningChipsForTicker(symbol, quote)
         .map((chip) => `<span class="warning-chip ${chip.className}">${escapeHtml(chip.text)}</span>`)
         .join("");
+      const confidenceTag = getConfidenceTag(reportForSymbol);
+      const riskTag = getRiskLevelTag(scorecardForSymbol);
+      const simpleStatus = getSimpleTickerStatus(scorecardForSymbol);
+      const simpleWhy = getSimpleTickerWhy(quote, scorecardForSymbol);
       const trendClass = !Number.isFinite(pct)
         ? "value-flat"
         : pct > 0
@@ -884,6 +950,12 @@ function renderTickerIntelView() {
         <span class="ticker-item-bottom">
           <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
           <span class="${trendClass}">${formatPercent(pct)}</span>
+        </span>
+        <span class="ticker-item-context">${escapeHtml(simpleStatus)}</span>
+        <span class="ticker-item-context muted">${escapeHtml(simpleWhy)}</span>
+        <span class="ticker-meta-row">
+          <span class="meta-pill ${escapeHtml(confidenceTag.className)}">${escapeHtml(confidenceTag.text)}</span>
+          <span class="meta-pill ${escapeHtml(riskTag.className)}">${escapeHtml(riskTag.text)}</span>
         </span>
         ${warningChips ? `<span class="ticker-warning-row">${warningChips}</span>` : ""}
       </button>
@@ -2638,6 +2710,7 @@ async function initApp() {
   const schwabFlag = params.get("schwab");
   const schwabReason = params.get("reason");
   applyLayoutPrefs();
+  startMarketOpenThemeTimer();
 
   await refreshSchwabSession();
   if (schwabSession.connected) {
