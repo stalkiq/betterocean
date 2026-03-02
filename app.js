@@ -627,19 +627,6 @@ function getIntradayRangePercent(quote) {
   return ((high - low) / close) * 100;
 }
 
-function getEaseScoreForTicker(symbol, quote) {
-  if (!quote || quote.unavailable) return -999;
-  const pct = Math.abs(Number(getOpenDeltaPercent(quote) || 0));
-  const rangePct = Number(getIntradayRangePercent(quote) || 0);
-  const status = getSignalKeyForQuote(quote);
-  const directionalBonus = status === "neutral" ? 0 : status === "no-data" ? -4 : 2;
-  const cleanRangeBonus = rangePct >= 0.8 && rangePct <= 6 ? 2 : rangePct > 6 ? -1 : 0;
-  const report = tickerIntelState.reportCache[symbol];
-  const confidenceBonus =
-    report?.confidence === "high" ? 2 : report?.confidence === "medium" ? 1 : report?.confidence === "low" ? 0 : 0;
-  return pct * 2 + directionalBonus + cleanRangeBonus + confidenceBonus;
-}
-
 function looksLikeBigNews(title) {
   const t = String(title || "").toLowerCase();
   return /(merger|acquisition|lawsuit|investigation|ceo|resign|layoff|guidance|downgrade|upgrade|tariff|attack|probe)/.test(
@@ -669,6 +656,153 @@ function getWarningChipsForTicker(symbol, quote) {
   return chips.slice(0, 3);
 }
 
+function clampNumber(value, min, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return min;
+  return Math.min(max, Math.max(min, n));
+}
+
+function getDecisionScorecard(symbol, quote, report) {
+  if (!quote || quote.unavailable) {
+    return {
+      overall: 0,
+      rating: 0,
+      label: "Need More Data",
+      trendStrength: 0,
+      riskLevel: 0,
+      valuation: 0,
+      newsSentiment: 0,
+      catalystStrength: 0,
+    };
+  }
+
+  const openDelta = Number(getOpenDeltaPercent(quote) || 0);
+  const rangePct = Number(getIntradayRangePercent(quote) || 0);
+  const signal = String(report?.signal || "neutral").toLowerCase();
+  const confidence = String(report?.confidence || "medium").toLowerCase();
+  const bullishCount = Array.isArray(report?.bullishFactors) ? report.bullishFactors.length : 0;
+  const bearishCount = Array.isArray(report?.bearishFactors) ? report.bearishFactors.length : 0;
+  const catalystCount = Array.isArray(report?.catalystWatch) ? report.catalystWatch.length : 0;
+
+  const trendStrength = clampNumber(50 + openDelta * 14, 0, 100);
+  const riskLevel = clampNumber(100 - Math.abs(openDelta) * 14 - Math.max(0, rangePct - 4) * 8, 0, 100);
+  const valuationBase = signal === "bullish" ? 70 : signal === "bearish" ? 35 : 55;
+  const valuation = clampNumber(valuationBase + (confidence === "high" ? 6 : confidence === "low" ? -4 : 0), 0, 100);
+  const newsSentiment = clampNumber(
+    55 + (signal === "bullish" ? 12 : signal === "bearish" ? -12 : 0) + (bullishCount - bearishCount) * 3,
+    0,
+    100
+  );
+  const catalystStrength = clampNumber(catalystCount * 16 + (confidence === "high" ? 15 : 7), 0, 100);
+
+  const overall = Math.round(
+    trendStrength * 0.24 + riskLevel * 0.2 + valuation * 0.2 + newsSentiment * 0.2 + catalystStrength * 0.16
+  );
+  const rating = Math.max(1, Math.min(5, Math.round(overall / 20)));
+  const label =
+    overall >= 75
+      ? "Strong Buy Zone"
+      : overall >= 60
+        ? "Watch for Entry"
+        : overall >= 45
+          ? "Mixed / Wait"
+          : "Avoid for Now";
+
+  return {
+    overall,
+    rating,
+    label,
+    trendStrength: Math.round(trendStrength),
+    riskLevel: Math.round(riskLevel),
+    valuation: Math.round(valuation),
+    newsSentiment: Math.round(newsSentiment),
+    catalystStrength: Math.round(catalystStrength),
+  };
+}
+
+function getTradeReadiness(quote, scorecard) {
+  if (!quote || quote.unavailable) return null;
+  const close = Number(quote?.close || 0);
+  if (!Number.isFinite(close) || close <= 0) return null;
+
+  const entryBandPct = 0.8;
+  const entryLow = close * (1 - entryBandPct / 100);
+  const entryHigh = close * (1 + entryBandPct / 100);
+  const targetPct = clampNumber(2 + (scorecard.overall - 50) / 9, 1.5, 8);
+  const stopPct = clampNumber(1.1 + (100 - scorecard.riskLevel) / 18, 1, 5);
+  const target = close * (1 + targetPct / 100);
+  const stop = close * (1 - stopPct / 100);
+  const reward = target - close;
+  const risk = close - stop;
+  const rr = risk > 0 ? reward / risk : 0;
+
+  const snapshot = getPortfolioSnapshot();
+  const portfolioValue = Number(snapshot.totalLiquidationValue || 0);
+  const cash = Number(snapshot.totalCash || 0);
+  const riskBudgetDollar = portfolioValue > 0 ? portfolioValue * 0.01 : close * 2;
+  const sharesByRisk = risk > 0 ? Math.max(1, Math.floor(riskBudgetDollar / risk)) : 1;
+  const sharesByCash = cash > 0 ? Math.max(1, Math.floor(cash / close)) : sharesByRisk;
+  const shares = Math.max(1, Math.min(sharesByRisk, sharesByCash));
+  const positionValue = shares * close;
+  const upsideDollar = shares * reward;
+  const downsideDollar = shares * risk;
+
+  return {
+    entryLow,
+    entryHigh,
+    target,
+    stop,
+    rr,
+    shares,
+    positionValue,
+    upsideDollar,
+    downsideDollar,
+  };
+}
+
+function getPortfolioFit(symbol, quote, scorecard) {
+  const positions = getAllPositions();
+  const snapshot = getPortfolioSnapshot();
+  const held = positions.find((p) => String(p?.instrument?.symbol || "").toUpperCase() === symbol);
+  const close = Number(quote?.close || 0);
+  const requiredCash = Number.isFinite(close) && close > 0 ? close : 0;
+  const cash = Number(snapshot.totalCash || 0);
+  const cashReady = cash >= requiredCash && requiredCash > 0;
+  const currentHoldingValue = Number(held?.marketValue || 0);
+  const concentrationPct =
+    snapshot.totalLiquidationValue > 0
+      ? ((currentHoldingValue + (Number.isFinite(close) ? close : 0)) / snapshot.totalLiquidationValue) * 100
+      : 0;
+
+  const fitScore = Math.round(
+    clampNumber(
+      45 +
+        (cashReady ? 22 : -15) +
+        (held ? -8 : 8) +
+        (scorecard.riskLevel >= 55 ? 12 : -6) +
+        (concentrationPct >= 20 ? -18 : concentrationPct >= 10 ? -8 : 8),
+      0,
+      100
+    )
+  );
+
+  return {
+    fitScore,
+    cashReady,
+    requiredCash,
+    availableCash: cash,
+    alreadyHeld: Boolean(held),
+    concentrationPct,
+  };
+}
+
+function getTickerRankingScore(symbol, quote) {
+  if (!quote || quote.unavailable) return -999;
+  const report = tickerIntelState.reportCache[symbol] || null;
+  const scorecard = getDecisionScorecard(symbol, quote, report);
+  return scorecard.overall;
+}
+
 function getFilteredTickerUniverse() {
   const search = String(tickerIntelState.search || "")
     .trim()
@@ -684,7 +818,11 @@ function getFilteredTickerUniverse() {
     if (signalFilter !== "all" && getSignalKeyForQuote(quote) !== signalFilter) return false;
     return true;
   });
-  return filtered.sort((a, b) => getEaseScoreForTicker(b, tickerIntelState.quoteBySymbol[b]) - getEaseScoreForTicker(a, tickerIntelState.quoteBySymbol[a]));
+  return filtered.sort(
+    (a, b) =>
+      getTickerRankingScore(b, tickerIntelState.quoteBySymbol[b]) -
+      getTickerRankingScore(a, tickerIntelState.quoteBySymbol[a])
+  );
 }
 
 function getTickerFilterCounts() {
@@ -755,6 +893,18 @@ function renderTickerIntelView() {
 
   const quote = report?.quote;
   const openDelta = quote ? getOpenDeltaPercent(quote) : null;
+  const selectedScorecard = getDecisionScorecard(selected, quote, report);
+  const selectedReadiness = getTradeReadiness(quote, selectedScorecard);
+  const selectedFit = getPortfolioFit(selected, quote, selectedScorecard);
+  const topIdeas = filtered
+    .map((symbol) => {
+      const q = tickerIntelState.quoteBySymbol[symbol];
+      const r = tickerIntelState.reportCache[symbol] || null;
+      const score = getDecisionScorecard(symbol, q, r);
+      return { symbol, score: score.overall, label: score.label };
+    })
+    .filter((row) => row.score > 0)
+    .slice(0, 5);
   const quoteSummary = quote
     ? `
       <section class="ticker-quote-grid">
@@ -841,6 +991,74 @@ function renderTickerIntelView() {
         </div>
       </header>
       ${quoteSummary}
+      <section class="ticker-report-grid">
+        <article class="schwab-card decision-overall">
+          <h4>Investability Score</h4>
+          <div class="decision-score-main">${selectedScorecard.overall}<span>/100</span></div>
+          <div class="decision-rating">${"★".repeat(selectedScorecard.rating)}${"☆".repeat(5 - selectedScorecard.rating)}</div>
+          <p class="schwab-card-sub">${selectedScorecard.label}</p>
+        </article>
+        <article class="schwab-card">
+          <h4>Decision Scorecard</h4>
+          <div class="decision-subscore-grid">
+            <div><span>Trend strength</span><strong>${selectedScorecard.trendStrength}</strong></div>
+            <div><span>Risk control</span><strong>${selectedScorecard.riskLevel}</strong></div>
+            <div><span>Value setup</span><strong>${selectedScorecard.valuation}</strong></div>
+            <div><span>News tone</span><strong>${selectedScorecard.newsSentiment}</strong></div>
+            <div><span>Catalyst power</span><strong>${selectedScorecard.catalystStrength}</strong></div>
+          </div>
+        </article>
+      </section>
+      <section class="ticker-report-grid">
+        <article class="schwab-card">
+          <h4>Trade Readiness</h4>
+          ${
+            selectedReadiness
+              ? `
+          <div class="decision-subscore-grid">
+            <div><span>Entry zone</span><strong>${renderPriceCell(selectedReadiness.entryLow)} - ${renderPriceCell(selectedReadiness.entryHigh)}</strong></div>
+            <div><span>Upside target</span><strong>${renderPriceCell(selectedReadiness.target)}</strong></div>
+            <div><span>Risk line (stop)</span><strong>${renderPriceCell(selectedReadiness.stop)}</strong></div>
+            <div><span>Risk / reward</span><strong>${selectedReadiness.rr.toFixed(2)}:1</strong></div>
+            <div><span>Suggested shares</span><strong>${selectedReadiness.shares.toLocaleString()}</strong></div>
+            <div><span>Position size</span><strong>${formatMoney(selectedReadiness.positionValue)}</strong></div>
+            <div><span>If target hits</span><strong class="value-up">+${formatMoney(selectedReadiness.upsideDollar)}</strong></div>
+            <div><span>If stop hits</span><strong class="value-down">-${formatMoney(selectedReadiness.downsideDollar)}</strong></div>
+          </div>
+          `
+              : '<p class="schwab-card-sub">Not enough price data yet to compute trade numbers.</p>'
+          }
+        </article>
+        <article class="schwab-card">
+          <h4>Portfolio Fit</h4>
+          <div class="decision-subscore-grid">
+            <div><span>Fit score</span><strong>${selectedFit.fitScore}/100</strong></div>
+            <div><span>Cash needed (1 share)</span><strong>${formatMoney(selectedFit.requiredCash)}</strong></div>
+            <div><span>Available cash</span><strong>${formatMoney(selectedFit.availableCash)}</strong></div>
+            <div><span>Cash ready</span><strong>${selectedFit.cashReady ? "Yes" : "No"}</strong></div>
+            <div><span>Already in portfolio</span><strong>${selectedFit.alreadyHeld ? "Yes" : "No"}</strong></div>
+            <div><span>Concentration impact</span><strong>${Number(selectedFit.concentrationPct || 0).toFixed(1)}%</strong></div>
+          </div>
+          <p class="schwab-card-sub">This helps prioritize ideas that match your current account, not just market hype.</p>
+        </article>
+      </section>
+      <section class="schwab-card">
+        <h4>Top 5 Easiest Choices Right Now</h4>
+        <div class="ticker-priority-list">
+          ${
+            topIdeas.length
+              ? topIdeas
+                  .map(
+                    (idea, idx) =>
+                      `<button type="button" class="ticker-priority-item" data-ticker="${escapeHtml(idea.symbol)}"><span>#${
+                        idx + 1
+                      } ${escapeHtml(idea.symbol)}</span><span>${idea.score}/100 • ${escapeHtml(idea.label)}</span></button>`
+                  )
+                  .join("")
+              : '<div class="settings-desc">No ranked ideas yet. Refresh prices to populate scores.</div>'
+          }
+        </div>
+      </section>
       ${debateHtml}
       <section class="ticker-report-grid">
         <article class="schwab-card"><h4>Why It Could Go Up</h4><ul class="ticker-bullets">${renderListItems(
@@ -939,6 +1157,27 @@ function wireTickerIntelEvents() {
     });
   }
   workspaceTableWrap.querySelectorAll(".ticker-item").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const symbol = btn.dataset.ticker;
+      if (!symbol) return;
+      tickerIntelState = { ...tickerIntelState, selected: symbol, loading: true, error: "" };
+      renderTickerIntelLoading();
+      loadTickerIntelReport(symbol)
+        .then(() => {
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        })
+        .catch((error) => {
+          tickerIntelState = {
+            ...tickerIntelState,
+            loading: false,
+            report: null,
+            error: error.message || "Failed to load ticker report.",
+          };
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        });
+    });
+  });
+  workspaceTableWrap.querySelectorAll(".ticker-priority-item").forEach((btn) => {
     btn.addEventListener("click", () => {
       const symbol = btn.dataset.ticker;
       if (!symbol) return;

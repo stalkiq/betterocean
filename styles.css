@@ -634,6 +634,80 @@ td {
   background: rgba(56, 94, 150, 0.28);
 }
 
+.decision-overall {
+  background: linear-gradient(180deg, #122547 0%, #0d1b34 100%);
+}
+
+.decision-score-main {
+  margin-top: 10px;
+  font-size: 42px;
+  font-weight: 800;
+  color: #eff5ff;
+  line-height: 1;
+}
+
+.decision-score-main span {
+  font-size: 16px;
+  color: #9db5df;
+  margin-left: 4px;
+}
+
+.decision-rating {
+  margin-top: 8px;
+  color: #ffd37a;
+  letter-spacing: 0.08em;
+}
+
+.decision-subscore-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.decision-subscore-grid div {
+  border: 1px solid #263d62;
+  border-radius: 8px;
+  background: #0f1c33;
+  padding: 8px;
+  display: grid;
+  gap: 3px;
+}
+
+.decision-subscore-grid span {
+  font-size: 11px;
+  color: #9eb3d9;
+}
+
+.decision-subscore-grid strong {
+  font-size: 13px;
+  color: #e4eeff;
+}
+
+.ticker-priority-list {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.ticker-priority-item {
+  border: 1px solid #33507e;
+  border-radius: 9px;
+  background: #11213d;
+  color: #d8e8ff;
+  font: inherit;
+  padding: 9px 10px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+
+.ticker-priority-item:hover {
+  border-color: #6395e4;
+  background: #16305a;
+}
+
 .ticker-intel-report {
  padding: 14px;
  display: grid;
