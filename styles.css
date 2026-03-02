@@ -521,6 +521,43 @@ grid-template-columns: 320px 1fr;
  gap: 12px;
 }
 
+.coverage-legend {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.legend-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid #4c5f88;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.legend-chip.good {
+  border-color: #2f9f6a;
+  color: #b9f1d5;
+  background: rgba(30, 107, 72, 0.26);
+}
+
+.legend-chip.caution {
+  border-color: #c39b45;
+  color: #ffe8b6;
+  background: rgba(125, 94, 32, 0.3);
+}
+
+.legend-chip.risk {
+  border-color: #be5f72;
+  color: #ffd7df;
+  background: rgba(139, 56, 74, 0.28);
+}
+
 .ticker-intel-list,
 .ticker-intel-report {
  border: 1px solid var(--line);
@@ -598,6 +635,17 @@ grid-template-columns: 320px 1fr;
  align-items: center;
  justify-content: space-between;
  gap: 8px;
+}
+
+.ticker-score-badge {
+  margin-left: auto;
+  margin-right: 4px;
+  font-size: 10px;
+  border-radius: 999px;
+  border: 1px solid #4a5f8d;
+  padding: 2px 7px;
+  color: #d9e7ff;
+  background: rgba(68, 91, 131, 0.25);
 }
 
 .ticker-item-bottom {
@@ -782,6 +830,65 @@ grid-template-columns: 320px 1fr;
 .ticker-priority-item:hover {
   border-color: #6395e4;
   background: #16305a;
+}
+
+.sort-mode-row {
+  display: flex;
+  gap: 6px;
+}
+
+.sort-mode-btn {
+  flex: 1;
+  border: 1px solid #36517c;
+  border-radius: 8px;
+  background: #10203a;
+  color: #cfe0ff;
+  padding: 7px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.sort-mode-btn.active {
+  border-color: #6ea3ff;
+  background: #183663;
+  color: #f1f6ff;
+}
+
+.detail-tab-row {
+  display: flex;
+  gap: 8px;
+}
+
+.detail-tab-btn {
+  border: 1px solid #36517c;
+  border-radius: 8px;
+  background: #10203a;
+  color: #cfe0ff;
+  padding: 7px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.detail-tab-btn.active {
+  border-color: #6ea3ff;
+  background: #183663;
+  color: #f1f6ff;
+}
+
+.quick-take-bar {
+  border: 1px solid #32527c;
+  border-radius: 9px;
+  background: #0f213f;
+  padding: 10px 12px;
+  color: #d7e7ff;
+}
+
+.quick-take-bar strong {
+  color: #9ec4ff;
+}
+
+.hidden-section {
+  display: none !important;
 }
 
 .ticker-intel-report {

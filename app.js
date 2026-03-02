@@ -104,6 +104,9 @@ let investmentsMarket = { assets: [], updatedAt: null };
 let openingPlaybook = { buckets: [], asOf: null };
 let openingQuotesBySymbol = {};
 const DEFAULT_TICKER_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH"];
+const ETF_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLP", "XLY", "TLT", "GLD"];
+const TECH_FOCUS_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AVGO", "AMD", "INTC", "QCOM", "TSM", "ADBE", "CRM", "ORCL", "META"];
+const DIVIDEND_FOCUS_SYMBOLS = ["KO", "PEP", "PG", "JNJ", "XOM", "CVX", "T", "VZ", "PFE", "MCD", "WMT", "ABBV"];
 let tickerIntelState = {
   selected: "AAPL",
   loading: false,
@@ -117,6 +120,10 @@ let tickerIntelState = {
   signalFilter: "all",
   priceFilter: "all",
   search: "",
+  sortMode: "best-now",
+  universePreset: "sp500",
+  detailTab: "rating",
+  allUniverse: [],
   reportCache: {},
   reportCacheAt: {},
   quotesUpdatedAt: 0,
@@ -281,13 +288,16 @@ async function loadTickerUniverse(limit = 500) {
   const symbols = Array.isArray(data.symbols)
     ? [...new Set(data.symbols.map((s) => String(s || "").trim().toUpperCase()).filter(Boolean))]
     : [];
+  const nextAll = symbols.length ? symbols : DEFAULT_TICKER_WATCHLIST;
   tickerIntelState = {
     ...tickerIntelState,
-    universe: symbols.length ? symbols : DEFAULT_TICKER_WATCHLIST,
+    allUniverse: nextAll,
+    universe: nextAll,
     universeSource: "",
     loadingUniverse: false,
-    selected: symbols.includes(tickerIntelState.selected) ? tickerIntelState.selected : symbols[0] || "AAPL",
+    selected: nextAll.includes(tickerIntelState.selected) ? tickerIntelState.selected : nextAll[0] || "AAPL",
   };
+  applyUniversePreset(tickerIntelState.universePreset || "sp500");
   return tickerIntelState.universe;
 }
 
@@ -826,6 +836,51 @@ function getTickerRankingScore(symbol, quote) {
   return scorecard.overall;
 }
 
+function uniqueSymbols(list) {
+  return [...new Set((list || []).map((s) => String(s || "").trim().toUpperCase()).filter(Boolean))];
+}
+
+function getUniversePresetSymbols(preset) {
+  const base = uniqueSymbols(
+    tickerIntelState.allUniverse.length ? tickerIntelState.allUniverse : tickerIntelState.universe
+  );
+  if (!base.length) return uniqueSymbols(DEFAULT_TICKER_WATCHLIST);
+
+  if (preset === "etf-focus") return uniqueSymbols(ETF_SYMBOLS);
+  if (preset === "tech-focus") return uniqueSymbols(TECH_FOCUS_SYMBOLS.filter((s) => base.includes(s)));
+  if (preset === "dividend-focus") return uniqueSymbols(DIVIDEND_FOCUS_SYMBOLS.filter((s) => base.includes(s)));
+  if (preset === "my-holdings") return uniqueSymbols(getAllPositions().map((p) => p?.instrument?.symbol));
+  if (preset === "big-movers") {
+    const ranked = [...base].sort((a, b) => {
+      const aPct = Math.abs(Number(getOpenDeltaPercent(tickerIntelState.quoteBySymbol[a]) || 0));
+      const bPct = Math.abs(Number(getOpenDeltaPercent(tickerIntelState.quoteBySymbol[b]) || 0));
+      return bPct - aPct;
+    });
+    return ranked.slice(0, 150);
+  }
+  if (preset === "high-volatility") {
+    const ranked = [...base].sort((a, b) => {
+      const aRange = Number(getIntradayRangePercent(tickerIntelState.quoteBySymbol[a]) || 0);
+      const bRange = Number(getIntradayRangePercent(tickerIntelState.quoteBySymbol[b]) || 0);
+      return bRange - aRange;
+    });
+    return ranked.slice(0, 150);
+  }
+  return base;
+}
+
+function applyUniversePreset(preset) {
+  const normalizedPreset = String(preset || "sp500");
+  const symbols = getUniversePresetSymbols(normalizedPreset);
+  const nextUniverse = symbols.length ? symbols : uniqueSymbols(DEFAULT_TICKER_WATCHLIST);
+  tickerIntelState = {
+    ...tickerIntelState,
+    universePreset: normalizedPreset,
+    universe: nextUniverse,
+    selected: nextUniverse.includes(tickerIntelState.selected) ? tickerIntelState.selected : nextUniverse[0],
+  };
+}
+
 function getSimpleTickerStatus(scorecard) {
   if (!scorecard || !Number.isFinite(scorecard.overall) || scorecard.overall <= 0) {
     return "Need more market data to rate this ticker.";
@@ -878,6 +933,23 @@ function getFilteredTickerUniverse() {
     if (signalFilter !== "all" && getSignalKeyForQuote(quote) !== signalFilter) return false;
     return true;
   });
+  const sortMode = tickerIntelState.sortMode || "best-now";
+  if (sortMode === "lowest-risk") {
+    return filtered.sort((a, b) => {
+      const qa = tickerIntelState.quoteBySymbol[a];
+      const qb = tickerIntelState.quoteBySymbol[b];
+      const ra = getDecisionScorecard(a, qa, tickerIntelState.reportCache[a] || null).riskLevel;
+      const rb = getDecisionScorecard(b, qb, tickerIntelState.reportCache[b] || null).riskLevel;
+      return rb - ra;
+    });
+  }
+  if (sortMode === "big-movers") {
+    return filtered.sort((a, b) => {
+      const aPct = Math.abs(Number(getOpenDeltaPercent(tickerIntelState.quoteBySymbol[a]) || 0));
+      const bPct = Math.abs(Number(getOpenDeltaPercent(tickerIntelState.quoteBySymbol[b]) || 0));
+      return bPct - aPct;
+    });
+  }
   return filtered.sort(
     (a, b) =>
       getTickerRankingScore(b, tickerIntelState.quoteBySymbol[b]) -
@@ -946,7 +1018,11 @@ function renderTickerIntelView() {
             : "value-flat";
       return `
       <button type="button" class="ticker-item ${rowToneClass} ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
-        <span class="ticker-item-top"><span class="ticker-item-symbol">${symbol}</span>${signalPill}</span>
+        <span class="ticker-item-top">
+          <span class="ticker-item-symbol">${symbol}</span>
+          <span class="ticker-score-badge">${scorecardForSymbol.overall || "--"}/100</span>
+          ${signalPill}
+        </span>
         <span class="ticker-item-bottom">
           <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
           <span class="${trendClass}">${formatPercent(pct)}</span>
@@ -968,6 +1044,15 @@ function renderTickerIntelView() {
   const selectedScorecard = getDecisionScorecard(selected, quote, report);
   const selectedReadiness = getTradeReadiness(quote, selectedScorecard);
   const selectedFit = getPortfolioFit(selected, quote, selectedScorecard);
+  const detailTab = tickerIntelState.detailTab || "rating";
+  const quickTake =
+    selectedScorecard.overall >= 75
+      ? "Clear setup right now."
+      : selectedScorecard.overall >= 60
+        ? "Promising, but wait for cleaner entry."
+        : selectedScorecard.overall >= 45
+          ? "Mixed setup. Keep risk small."
+          : "Higher risk. Better to wait.";
   const topIdeas = filtered
     .map((symbol) => {
       const q = tickerIntelState.quoteBySymbol[symbol];
@@ -1063,7 +1148,15 @@ function renderTickerIntelView() {
         </div>
       </header>
       ${quoteSummary}
-      <section class="ticker-report-grid">
+      <section class="quick-take-bar">
+        <strong>Quick Take:</strong> ${escapeHtml(quickTake)}
+      </section>
+      <section class="detail-tab-row">
+        <button type="button" class="detail-tab-btn ${detailTab === "rating" ? "active" : ""}" data-detail-tab="rating">Rating</button>
+        <button type="button" class="detail-tab-btn ${detailTab === "plan" ? "active" : ""}" data-detail-tab="plan">Plan</button>
+        <button type="button" class="detail-tab-btn ${detailTab === "fit" ? "active" : ""}" data-detail-tab="fit">Account Fit</button>
+      </section>
+      <section class="ticker-report-grid ${detailTab === "rating" ? "" : "hidden-section"}">
         <article class="schwab-card decision-overall">
           <h4>Investability Score</h4>
           <div class="decision-score-main">${selectedScorecard.overall}<span>/100</span></div>
@@ -1081,7 +1174,7 @@ function renderTickerIntelView() {
           </div>
         </article>
       </section>
-      <section class="ticker-report-grid">
+      <section class="ticker-report-grid ${detailTab === "plan" ? "" : "hidden-section"}">
         <article class="schwab-card">
           <h4>Trade Readiness</h4>
           ${
@@ -1101,6 +1194,8 @@ function renderTickerIntelView() {
               : '<p class="schwab-card-sub">Not enough price data yet to compute trade numbers.</p>'
           }
         </article>
+      </section>
+      <section class="ticker-report-grid ${detailTab === "fit" ? "" : "hidden-section"}">
         <article class="schwab-card">
           <h4>Portfolio Fit</h4>
           <div class="decision-subscore-grid">
@@ -1114,7 +1209,7 @@ function renderTickerIntelView() {
           <p class="schwab-card-sub">This helps prioritize ideas that match your current account, not just market hype.</p>
         </article>
       </section>
-      <section class="schwab-card">
+      <section class="schwab-card ${detailTab === "plan" ? "" : "hidden-section"}">
         <h4>Top 5 Easiest Choices Right Now</h4>
         <div class="ticker-priority-list">
           ${
@@ -1161,10 +1256,24 @@ function renderTickerIntelView() {
     <section class="ticker-intel-layout">
       <aside class="ticker-intel-list">
         <h4>Market Coverage</h4>
-        <p class="settings-desc">Showing ${filtered.length}/${totalUniverse} symbols • sorted by easiest choices first • quotes loaded ${
+        <p class="settings-desc">Showing ${filtered.length}/${totalUniverse} symbols • quotes loaded ${
           tickerIntelState.loadedQuotes
         }/${totalUniverse}${tickerIntelState.loadingUniverse ? " (updating...)" : ""}</p>
+        <div class="coverage-legend">
+          <span class="legend-chip good">Good setup</span>
+          <span class="legend-chip caution">Use caution</span>
+          <span class="legend-chip risk">Higher risk</span>
+        </div>
         <div class="ticker-filters">
+          <select id="tickerUniversePreset" class="trade-input">
+            <option value="sp500" ${tickerIntelState.universePreset === "sp500" ? "selected" : ""}>S&P 500 Universe</option>
+            <option value="etf-focus" ${tickerIntelState.universePreset === "etf-focus" ? "selected" : ""}>ETF Focus</option>
+            <option value="tech-focus" ${tickerIntelState.universePreset === "tech-focus" ? "selected" : ""}>Tech Focus</option>
+            <option value="dividend-focus" ${tickerIntelState.universePreset === "dividend-focus" ? "selected" : ""}>Dividend Focus</option>
+            <option value="big-movers" ${tickerIntelState.universePreset === "big-movers" ? "selected" : ""}>Big Movers Focus</option>
+            <option value="high-volatility" ${tickerIntelState.universePreset === "high-volatility" ? "selected" : ""}>High Volatility Focus</option>
+            <option value="my-holdings" ${tickerIntelState.universePreset === "my-holdings" ? "selected" : ""}>My Holdings</option>
+          </select>
           <input id="tickerSearchInput" class="trade-input" placeholder="Search symbol (e.g. AAPL)" value="${escapeHtml(
             tickerIntelState.search || ""
           )}" />
@@ -1183,6 +1292,11 @@ function renderTickerIntelView() {
             <option value="500plus" ${tickerIntelState.priceFilter === "500plus" ? "selected" : ""}>$500+ (${counts.price["500plus"]})</option>
             <option value="unknown" ${tickerIntelState.priceFilter === "unknown" ? "selected" : ""}>No Price (${counts.price.unknown})</option>
           </select>
+          <div class="sort-mode-row">
+            <button type="button" class="sort-mode-btn ${tickerIntelState.sortMode === "best-now" ? "active" : ""}" data-sort-mode="best-now">Best Now</button>
+            <button type="button" class="sort-mode-btn ${tickerIntelState.sortMode === "lowest-risk" ? "active" : ""}" data-sort-mode="lowest-risk">Lowest Risk</button>
+            <button type="button" class="sort-mode-btn ${tickerIntelState.sortMode === "big-movers" ? "active" : ""}" data-sort-mode="big-movers">Big Movers</button>
+          </div>
           <button type="button" class="schwab-btn schwab-btn-ghost" id="refreshTickerUniverseBtn">Refresh Prices</button>
         </div>
         <div class="ticker-items">${watchlistHtml || '<div class="settings-desc">No symbols match the current filters.</div>'}</div>
@@ -1196,6 +1310,17 @@ function renderTickerIntelView() {
 }
 
 function wireTickerIntelEvents() {
+  const universePreset = document.getElementById("tickerUniversePreset");
+  if (universePreset) {
+    universePreset.addEventListener("change", (e) => {
+      applyUniversePreset(e.target.value || "sp500");
+      tickerIntelState = { ...tickerIntelState, loadingUniverse: true };
+      renderTickerIntelView();
+      refreshTickerUniverseQuotes({ rerender: true, force: true }).catch(() => {
+        if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+      });
+    });
+  }
   const searchInput = document.getElementById("tickerSearchInput");
   if (searchInput) {
     searchInput.addEventListener("input", (e) => {
@@ -1228,6 +1353,18 @@ function wireTickerIntelEvents() {
         });
     });
   }
+  workspaceTableWrap.querySelectorAll("[data-sort-mode]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      tickerIntelState = { ...tickerIntelState, sortMode: btn.dataset.sortMode || "best-now" };
+      renderTickerIntelView();
+    });
+  });
+  workspaceTableWrap.querySelectorAll("[data-detail-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      tickerIntelState = { ...tickerIntelState, detailTab: btn.dataset.detailTab || "rating" };
+      renderTickerIntelView();
+    });
+  });
   workspaceTableWrap.querySelectorAll(".ticker-item").forEach((btn) => {
     btn.addEventListener("click", () => {
       const symbol = btn.dataset.ticker;
