@@ -16,6 +16,7 @@ const DO_API_BASE = "https://api.digitalocean.com";
 const TOKEN_KEY = "do_api_token";
 const API_CHAT_URL = "/api/chat/message";
 const SCHWAB_CONNECT_TAB = "Schwab Connect";
+const PORTFOLIO_TAB = "My Portfolio";
 const INVESTMENTS_TAB = "Investments";
 const TICKER_INTEL_TAB = "Ticker Intel";
 const TIME_TAB = "Time";
@@ -758,7 +759,9 @@ function wireTickerIntelEvents() {
 }
 
 function getLinkedAccounts() {
-  return Array.isArray(schwabData.accounts) ? schwabData.accounts : [];
+  if (Array.isArray(schwabData.accounts)) return schwabData.accounts;
+  if (Array.isArray(schwabData.accounts?.accounts)) return schwabData.accounts.accounts;
+  return [];
 }
 
 function getAllPositions() {
@@ -827,6 +830,107 @@ function formatDollars(value) {
     currency: "USD",
     maximumFractionDigits: 0,
   }).format(Number(value || 0));
+}
+
+function formatMoney(value) {
+  const n = Number(value || 0);
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: Math.abs(n) >= 1000 ? 0 : 2,
+  }).format(n);
+}
+
+function renderPortfolioView() {
+  if (!schwabSession.connected) {
+    workspaceTableWrap.innerHTML = `
+      <div class="do-error">
+        <strong>Schwab Login Required</strong>
+        <p>Connect your Schwab account to view your portfolio, balances, and positions.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const accounts = getLinkedAccounts();
+  const positions = getAllPositions();
+
+  const accountCards = accounts
+    .map((account) => {
+      const sa = account?.securitiesAccount || {};
+      const balances = sa.currentBalances || {};
+      const hash = sa.accountNumber || sa.hashValue || "-";
+      return `
+        <article class="schwab-card">
+          <h4>Account ${escapeHtml(String(hash))}</h4>
+          <ul class="schwab-list">
+            <li>Liquidation Value: ${formatMoney(balances.liquidationValue || 0)}</li>
+            <li>Cash Balance: ${formatMoney(balances.cashBalance || 0)}</li>
+            <li>Buying Power: ${formatMoney(balances.buyingPower || 0)}</li>
+            <li>Long Market Value: ${formatMoney(balances.longMarketValue || 0)}</li>
+          </ul>
+        </article>
+      `;
+    })
+    .join("");
+
+  const rows = positions
+    .map((position) => {
+      const symbol = position?.instrument?.symbol || "-";
+      const qty = Number(position?.longQuantity || 0) - Number(position?.shortQuantity || 0);
+      const marketValue = Number(position?.marketValue || 0);
+      const avgPrice = Number(position?.averagePrice || 0);
+      return `
+        <tr>
+          <td class="ticker-cell">${escapeHtml(String(symbol))}</td>
+          <td>${Number.isFinite(qty) ? qty.toLocaleString() : "-"}</td>
+          <td>${formatMoney(avgPrice)}</td>
+          <td>${formatMoney(marketValue)}</td>
+        </tr>
+      `;
+    })
+    .join("");
+
+  workspaceTableWrap.innerHTML = `
+    <div class="agent-view">
+      <section class="agent-hero">
+        <h3>Investment Accounts & Positions</h3>
+        <p>Auto-loaded from your connected Schwab profile. Review account balances and open equity positions in one place.</p>
+      </section>
+      <section class="schwab-metrics">
+        <article class="schwab-metric-card">
+          <h4>Linked Accounts</h4>
+          <div class="schwab-metric-value">${accounts.length}</div>
+        </article>
+        <article class="schwab-metric-card">
+          <h4>Total Positions</h4>
+          <div class="schwab-metric-value">${positions.length}</div>
+        </article>
+        <article class="schwab-metric-card">
+          <h4>Total Market Value</h4>
+          <div class="schwab-metric-value small">${formatMoney(
+            positions.reduce((sum, p) => sum + Number(p?.marketValue || 0), 0)
+          )}</div>
+        </article>
+      </section>
+      <section class="schwab-grid">
+        ${accountCards || '<article class="schwab-card"><h4>No accounts returned</h4><p class="schwab-card-sub">Your connected session has no account records yet. Try Refresh.</p></article>'}
+      </section>
+      <section class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Symbol</th>
+              <th>Quantity</th>
+              <th>Avg Price</th>
+              <th>Market Value</th>
+            </tr>
+          </thead>
+          <tbody>${rows || '<tr><td colspan="4">No positions returned.</td></tr>'}</tbody>
+        </table>
+      </section>
+    </div>
+  `;
 }
 
 function buildMissionZoneContext(agentId) {
@@ -1488,6 +1592,8 @@ function activateTab(tabName) {
     ? agent.subtitle
     : tabName === SCHWAB_CONNECT_TAB
       ? "Schwab OAuth required"
+      : tabName === PORTFOLIO_TAB
+        ? "Your Schwab accounts and positions"
       : tabName === INVESTMENTS_TAB
         ? "Public market dashboard"
           : tabName === TICKER_INTEL_TAB
@@ -1506,6 +1612,16 @@ function activateTab(tabName) {
 
   if (tabName === SCHWAB_CONNECT_TAB) {
     renderSchwabConnectView();
+    return;
+  }
+  if (tabName === PORTFOLIO_TAB) {
+    loadSchwabContextData()
+      .then(() => renderPortfolioView())
+      .catch((error) => {
+        workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
+          error.message || "Failed to load portfolio data."
+        }</p></div>`;
+      });
     return;
   }
   if (tabName === INVESTMENTS_TAB) {
@@ -1746,6 +1862,16 @@ workspaceRefreshBtn?.addEventListener("click", () => {
       });
     return;
   }
+  if (currentTab === PORTFOLIO_TAB) {
+    loadSchwabContextData()
+      .then(() => renderPortfolioView())
+      .catch((error) => {
+        workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
+          error.message || "Failed to load portfolio data."
+        }</p></div>`;
+      });
+    return;
+  }
   if (currentTab === TICKER_INTEL_TAB) {
     const universePromise =
       tickerIntelState.universe.length >= 50
@@ -1957,6 +2083,8 @@ async function initApp() {
 
   if (schwabFlag === "connected") {
     appendChatMessage("assistant", "Schwab login successful. Your account is connected.", "msg-muted");
+    openTabs.add(PORTFOLIO_TAB);
+    activateTab(PORTFOLIO_TAB);
   } else if (schwabFlag === "error") {
     appendChatMessage(
       "assistant",
