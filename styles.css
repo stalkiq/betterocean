@@ -1191,6 +1191,7 @@ grid-template-columns: 320px 1fr;
   gap: 10px;
   align-items: center;
   margin-bottom: 12px;
+  flex-wrap: wrap;
 }
 
 .cart-add-input {
@@ -1226,6 +1227,27 @@ grid-template-columns: 320px 1fr;
   white-space: nowrap;
 }
 
+.cart-table tr.tone-up td {
+  border-left: 2px solid rgba(70, 178, 111, 0.65);
+}
+
+.cart-table tr.tone-down td {
+  border-left: 2px solid rgba(197, 90, 110, 0.65);
+}
+
+.cart-table tr.tone-flat td {
+  border-left: 2px solid rgba(111, 132, 170, 0.45);
+}
+
+.cart-row-price {
+  font-weight: 600;
+}
+
+.cart-row-note {
+  font-size: 11px;
+  color: #9fb4db;
+}
+
 .cart-sell-strip {
   margin-bottom: 10px;
   display: flex;
@@ -1243,6 +1265,114 @@ grid-template-columns: 320px 1fr;
 .cart-sell-chip {
   padding: 5px 9px;
   font-size: 11px;
+}
+
+.shopping-market-card {
+  border: 1px solid #2b3e60;
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: linear-gradient(180deg, #0f1b31 0%, #0d172b 100%);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.shopping-market-left {
+  display: grid;
+  gap: 6px;
+}
+
+.shopping-market-right {
+  min-width: 260px;
+}
+
+.market-state-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  border: 1px solid #4b6289;
+  width: fit-content;
+}
+
+.market-state-pill.open {
+  color: #a9f1c9;
+  border-color: #2f8f5c;
+  background: rgba(35, 121, 77, 0.22);
+}
+
+.market-state-pill.closed {
+  color: #ffd2da;
+  border-color: #975767;
+  background: rgba(130, 63, 80, 0.24);
+}
+
+.shopping-market-clock {
+  font-size: 18px;
+  font-weight: 700;
+  color: #e4eeff;
+}
+
+.shopping-market-now {
+  color: #9cb0d5;
+  font-size: 12px;
+}
+
+.market-gate-note {
+  border: 1px solid #435b85;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.market-gate-note.open {
+  color: #a7edc6;
+  border-color: #3d8b62;
+  background: rgba(45, 128, 84, 0.16);
+}
+
+.market-gate-note.closed {
+  color: #ffd5dc;
+  border-color: #915767;
+  background: rgba(130, 63, 80, 0.2);
+}
+
+.shopping-quote-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
+  gap: 10px;
+}
+
+.shopping-quote-tile {
+  border: 1px solid #2f456a;
+  background: #0e1a2f;
+  border-radius: 10px;
+  padding: 8px 9px;
+  text-align: left;
+  color: #deebff;
+  cursor: pointer;
+}
+
+.shopping-quote-tile:hover {
+  border-color: #6286c2;
+  background: #13233f;
+}
+
+.shopping-quote-top,
+.shopping-quote-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.shopping-quote-bottom {
+  margin-top: 7px;
+  font-size: 13px;
 }
 
 .funding-required-card {

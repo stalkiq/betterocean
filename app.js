@@ -134,10 +134,14 @@ let shoppingState = {
   items: [],
   submitting: false,
   status: "",
+  quoteBySymbol: {},
+  quotesUpdatedAt: 0,
+  loadingQuotes: false,
 };
 let marketCountdownTimer = null;
 let marketOpenThemeTimer = null;
 let tickerUniverseQuotesPromise = null;
+let shoppingMarketClockTimer = null;
 let tickerUniverseRequestId = 0;
 let tickerReportRequestId = 0;
 let investmentsLoadedAt = 0;
@@ -612,6 +616,127 @@ function startMarketCountdown() {
   };
   update();
   marketCountdownTimer = setInterval(update, 1000);
+}
+
+function computeNextMarketCloseCountdown() {
+  const nowEt = getEtNowParts();
+  const nowSynthetic = Date.UTC(
+    nowEt.year,
+    nowEt.month - 1,
+    nowEt.day,
+    nowEt.hour,
+    nowEt.minute,
+    nowEt.second
+  );
+  const closeSynthetic = Date.UTC(nowEt.year, nowEt.month - 1, nowEt.day, 16, 0, 0);
+  const diffMs = Math.max(0, closeSynthetic - nowSynthetic);
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return { days, hours, minutes, seconds, diffMs };
+}
+
+function formatCountdown(countdown) {
+  const pad = (n) => String(Number(n || 0)).padStart(2, "0");
+  const days = countdown.days > 0 ? `${countdown.days}d ` : "";
+  return `${days}${pad(countdown.hours)}:${pad(countdown.minutes)}:${pad(countdown.seconds)}`;
+}
+
+function formatEtNowLabel() {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+  return formatter.format(new Date());
+}
+
+function stopShoppingMarketClock() {
+  if (shoppingMarketClockTimer) {
+    clearInterval(shoppingMarketClockTimer);
+    shoppingMarketClockTimer = null;
+  }
+}
+
+function updateShoppingSubmitButtonState() {
+  const submitBtn = document.getElementById("cartSubmitBtn");
+  if (!submitBtn) return;
+  const isConnected = Boolean(schwabSession.connected);
+  const hasBuy = shoppingState.items.some((item) => String(item?.side || "BUY").toUpperCase() === "BUY");
+  const marketOpen = isUsMarketOpenNow();
+  submitBtn.disabled = !isConnected || !shoppingState.items.length || shoppingState.submitting || (hasBuy && !marketOpen);
+}
+
+function startShoppingMarketClock() {
+  stopShoppingMarketClock();
+  const stateEl = document.getElementById("shoppingMarketState");
+  const countdownEl = document.getElementById("shoppingMarketCountdown");
+  const nowEl = document.getElementById("shoppingEtNow");
+  const gateEl = document.getElementById("shoppingMarketGate");
+  if (!stateEl || !countdownEl || !nowEl) return;
+
+  const update = () => {
+    const marketOpen = isUsMarketOpenNow();
+    const countdown = marketOpen ? computeNextMarketCloseCountdown() : computeNextMarketOpenCountdown();
+    stateEl.textContent = marketOpen ? "Market Open" : "Market Closed";
+    stateEl.className = `market-state-pill ${marketOpen ? "open" : "closed"}`;
+    countdownEl.textContent = marketOpen
+      ? `Closes in ${formatCountdown(countdown)}`
+      : `Opens in ${formatCountdown(countdown)}`;
+    nowEl.textContent = `ET now: ${formatEtNowLabel()}`;
+    if (gateEl) {
+      const hasBuy = shoppingState.items.some((item) => String(item?.side || "BUY").toUpperCase() === "BUY");
+      gateEl.textContent =
+        !marketOpen && hasBuy
+          ? "Buy orders are disabled while the U.S. market is closed."
+          : marketOpen
+            ? "Buy and sell orders are enabled."
+            : "Sell-only mode while market is closed.";
+      gateEl.className = `market-gate-note ${marketOpen ? "open" : "closed"}`;
+    }
+    updateShoppingSubmitButtonState();
+  };
+  update();
+  shoppingMarketClockTimer = setInterval(update, 1000);
+}
+
+function getShoppingWatchSymbols() {
+  return uniqueSymbols([
+    ...DEFAULT_TICKER_WATCHLIST,
+    ...shoppingState.items.map((item) => String(item?.symbol || "").toUpperCase()),
+  ]).slice(0, 20);
+}
+
+async function refreshShoppingQuotes({ force = false } = {}) {
+  const symbols = getShoppingWatchSymbols();
+  if (!symbols.length || shoppingState.loadingQuotes) return;
+  if (!force && shoppingState.quotesUpdatedAt && Date.now() - shoppingState.quotesUpdatedAt < 20000) return;
+  shoppingState = { ...shoppingState, loadingQuotes: true };
+  try {
+    const quotes = await fetchTickerQuoteBatch(symbols);
+    const quoteBySymbol = { ...(shoppingState.quoteBySymbol || {}) };
+    for (const quote of quotes) {
+      const normalized = normalizeUnifiedQuote(quote);
+      if (!normalized?.symbol) continue;
+      quoteBySymbol[normalized.symbol] = normalized;
+    }
+    shoppingState = {
+      ...shoppingState,
+      quoteBySymbol,
+      quotesUpdatedAt: Date.now(),
+      loadingQuotes: false,
+    };
+    if (currentTab === SHOPPING_TAB) renderShoppingView();
+  } catch {
+    shoppingState = { ...shoppingState, loadingQuotes: false };
+  }
 }
 
 function renderPriceCell(value) {
@@ -1824,6 +1949,14 @@ async function submitShoppingCartOrders() {
       const auto = await getAutoOrderOverrides(item);
       const finalSide = String(auto.side || item.side || "BUY").toUpperCase();
       const finalType = String(auto.orderType || item.orderType || "MARKET").toUpperCase();
+      if (finalSide === "BUY" && !isUsMarketOpenNow()) {
+        results.push({
+          symbol: item.symbol || "-",
+          ok: false,
+          message: "Buy blocked: U.S. market is closed.",
+        });
+        continue;
+      }
       const order = buildEquityOrder({
         side: finalSide,
         symbol: String(item.symbol || "").toUpperCase(),
@@ -1849,10 +1982,11 @@ async function submitShoppingCartOrders() {
 
   const successCount = results.filter((r) => r.ok).length;
   const failCount = results.length - successCount;
+  const firstFailure = results.find((r) => !r.ok)?.message || "";
   shoppingState = {
     ...shoppingState,
     submitting: false,
-    status: `Submitted ${successCount} order(s), ${failCount} failed.`,
+    status: `Submitted ${successCount} order(s), ${failCount} failed.${firstFailure ? ` ${firstFailure}` : ""}`,
   };
   appendChatMessage("assistant", shoppingState.status, failCount ? "msg-muted" : "msg-success");
   if (successCount > 0) await loadSchwabContextData().catch(() => ({}));
@@ -2377,6 +2511,8 @@ function renderSchwabConnectView() {
 
 function renderShoppingView() {
   const isConnected = Boolean(schwabSession.connected);
+  const marketOpen = isUsMarketOpenNow();
+  const hasBuyOrders = shoppingState.items.some((item) => String(item?.side || "BUY").toUpperCase() === "BUY");
   const sellChoices = (Array.isArray(schwabData.accounts) ? schwabData.accounts : [])
     .flatMap((account) => (Array.isArray(account?.securitiesAccount?.positions) ? account.securitiesAccount.positions : []))
     .map((position) => ({
@@ -2387,13 +2523,38 @@ function renderShoppingView() {
     .filter((p) => p.symbol && p.qty > 0)
     .sort((a, b) => b.marketValue - a.marketValue)
     .slice(0, 10);
+  const watchSymbols = getShoppingWatchSymbols();
+  const quoteTiles = watchSymbols
+    .map((symbol) => {
+      const quote = shoppingState.quoteBySymbol?.[symbol];
+      const pct = quote ? getOpenDeltaPercent(quote) : null;
+      const toneClass = !Number.isFinite(pct) ? "value-flat" : pct > 0 ? "value-up" : pct < 0 ? "value-down" : "value-flat";
+      return `
+        <button type="button" class="shopping-quote-tile" data-cart-add-symbol="${escapeHtml(symbol)}">
+          <span class="shopping-quote-top">
+            <strong>${escapeHtml(symbol)}</strong>
+            ${quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">No Data</span>'}
+          </span>
+          <span class="shopping-quote-bottom">
+            <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
+            <span class="${toneClass}">${formatPercent(pct)}</span>
+          </span>
+        </button>
+      `;
+    })
+    .join("");
 
   const rowsHtml = shoppingState.items
     .map((item) => {
       const needsLimit = item.orderType === "LIMIT" || item.orderType === "STOP_LIMIT";
       const needsStop = item.orderType === "STOP" || item.orderType === "STOP_LIMIT";
+      const symbol = String(item.symbol || "").toUpperCase();
+      const quote = shoppingState.quoteBySymbol?.[symbol];
+      const pct = quote ? getOpenDeltaPercent(quote) : null;
+      const rowTone = !Number.isFinite(pct) ? "tone-flat" : pct > 0 ? "tone-up" : pct < 0 ? "tone-down" : "tone-flat";
+      const buyBlocked = !marketOpen && String(item.side || "BUY").toUpperCase() === "BUY";
       return `
-      <tr data-cart-row="${item.id}">
+      <tr data-cart-row="${item.id}" class="${rowTone}">
         <td><input class="trade-input cart-input-symbol" data-cart-symbol value="${escapeHtml(item.symbol)}" placeholder="AAPL" /></td>
         <td>
           <select class="trade-input" data-cart-side>
@@ -2420,6 +2581,12 @@ function renderShoppingView() {
         </td>
         <td><label class="cart-auto-label"><input type="checkbox" data-cart-auto ${item.autoMode ? "checked" : ""} /> Auto</label></td>
         <td><button type="button" class="schwab-btn schwab-btn-ghost cart-remove-btn" data-cart-remove>Remove</button></td>
+        <td class="cart-row-price">${quote ? renderPriceCell(quote.close) : "-"}</td>
+        <td class="cart-row-move ${!Number.isFinite(pct) ? "value-flat" : pct > 0 ? "value-up" : pct < 0 ? "value-down" : "value-flat"}">${formatPercent(
+          pct
+        )}</td>
+        <td>${quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">No Data</span>'}</td>
+        <td class="cart-row-note">${buyBlocked ? "Buy waits for market open" : "Ready"}</td>
       </tr>
     `;
     })
@@ -2430,6 +2597,33 @@ function renderShoppingView() {
       <section class="agent-hero">
         <h3>Shopping Cart</h3>
         <p>Build buy and sell orders, then submit straight to Schwab. Auto mode uses Gradient ticker intelligence to bias side/type before submit.</p>
+      </section>
+      <section class="shopping-market-card">
+        <div class="shopping-market-left">
+          <span class="market-state-pill ${marketOpen ? "open" : "closed"}" id="shoppingMarketState">${
+            marketOpen ? "Market Open" : "Market Closed"
+          }</span>
+          <div class="shopping-market-clock" id="shoppingMarketCountdown">${
+            marketOpen ? "Closes in --:--:--" : "Opens in --:--:--"
+          }</div>
+          <div class="shopping-market-now" id="shoppingEtNow">ET now: ${formatEtNowLabel()}</div>
+        </div>
+        <div class="shopping-market-right">
+          <div class="market-gate-note ${marketOpen ? "open" : "closed"}" id="shoppingMarketGate">
+            ${
+              marketOpen
+                ? "Buy and sell orders are enabled."
+                : hasBuyOrders
+                  ? "Buy orders are disabled while the U.S. market is closed."
+                  : "Sell-only mode while market is closed."
+            }
+          </div>
+        </div>
+      </section>
+      <section class="schwab-card">
+        <h4>Live Stock Board</h4>
+        <p class="schwab-card-sub">Click any stock to add it to your cart with live price and signal context.</p>
+        <div class="shopping-quote-grid">${quoteTiles || '<div class="settings-desc">No symbols loaded yet.</div>'}</div>
       </section>
       <section class="schwab-card">
         ${
@@ -2452,6 +2646,7 @@ function renderShoppingView() {
         <div class="cart-toolbar">
           <input id="cartNewSymbol" class="trade-input cart-add-input" placeholder="Add ticker (AAPL)" ${isConnected ? "" : "disabled"} />
           <button type="button" class="schwab-btn schwab-btn-primary" id="cartAddBtn" ${isConnected ? "" : "disabled"}>Add Ticker</button>
+          <button type="button" class="schwab-btn schwab-btn-ghost" id="cartRefreshQuotesBtn">Refresh Prices</button>
           <button type="button" class="schwab-btn schwab-btn-ghost" id="cartClearBtn" ${isConnected ? "" : "disabled"}>Clear</button>
         </div>
         <div class="table-wrap">
@@ -2467,9 +2662,13 @@ function renderShoppingView() {
                 <th>TIF</th>
                 <th>Auto</th>
                 <th>Action</th>
+                <th>Last</th>
+                <th>Move %</th>
+                <th>Signal</th>
+                <th>Status</th>
               </tr>
             </thead>
-            <tbody>${rowsHtml || '<tr><td colspan="9">No orders in cart yet.</td></tr>'}</tbody>
+            <tbody>${rowsHtml || '<tr><td colspan="13">No orders in cart yet.</td></tr>'}</tbody>
           </table>
         </div>
         <div class="cart-footer">
@@ -2487,6 +2686,7 @@ function renderShoppingView() {
   const addBtn = document.getElementById("cartAddBtn");
   const newSymbolInput = document.getElementById("cartNewSymbol");
   const clearBtn = document.getElementById("cartClearBtn");
+  const refreshQuotesBtn = document.getElementById("cartRefreshQuotesBtn");
   const submitBtn = document.getElementById("cartSubmitBtn");
   if (addBtn && newSymbolInput) {
     addBtn.addEventListener("click", () => {
@@ -2496,6 +2696,17 @@ function renderShoppingView() {
       if (!symbol) return;
       shoppingState = { ...shoppingState, items: [...shoppingState.items, createShoppingCartItem(symbol)], status: "" };
       renderShoppingView();
+    });
+    newSymbolInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        addBtn.click();
+      }
+    });
+  }
+  if (refreshQuotesBtn) {
+    refreshQuotesBtn.addEventListener("click", () => {
+      refreshShoppingQuotes({ force: true }).catch(() => ({}));
     });
   }
   if (clearBtn) {
@@ -2548,6 +2759,16 @@ function renderShoppingView() {
     });
   });
 
+  const addFromBoardButtons = workspaceTableWrap.querySelectorAll("[data-cart-add-symbol]");
+  addFromBoardButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const symbol = String(btn.getAttribute("data-cart-add-symbol") || "").toUpperCase();
+      if (!symbol) return;
+      shoppingState = { ...shoppingState, items: [...shoppingState.items, createShoppingCartItem(symbol)], status: "" };
+      renderShoppingView();
+    });
+  });
+
   const quickSellButtons = workspaceTableWrap.querySelectorAll("[data-quick-sell-symbol]");
   quickSellButtons.forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -2569,6 +2790,12 @@ function renderShoppingView() {
       renderShoppingView();
     });
   });
+
+  if (!shoppingState.loadingQuotes) {
+    refreshShoppingQuotes().catch(() => ({}));
+  }
+  updateShoppingSubmitButtonState();
+  startShoppingMarketClock();
 }
 
 function renderSettingsView() {
@@ -2716,6 +2943,7 @@ function activateTab(tabName) {
   renderTabs(tabName);
 
   stopMarketCountdown();
+  stopShoppingMarketClock();
 
   if (tabName === SCHWAB_CONNECT_TAB) {
     renderSchwabConnectView();
