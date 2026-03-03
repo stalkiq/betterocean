@@ -1624,6 +1624,63 @@ function formatMoney(value) {
   }).format(n);
 }
 
+function pickFirstFiniteNumber(source, keys) {
+  for (const key of keys) {
+    const value = Number(source?.[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function getAccountPendingDepositSignal(account) {
+  const sa = account?.securitiesAccount || {};
+  const current = sa.currentBalances || {};
+  const projected = sa.projectedBalances || {};
+
+  const explicitPending = pickFirstFiniteNumber(current, [
+    "pendingDeposits",
+    "pendingDeposit",
+    "cashReceipts",
+    "pendingCash",
+    "pendingCredits",
+  ]);
+
+  const currentTradingCash = pickFirstFiniteNumber(current, [
+    "cashAvailableForTrading",
+    "availableFunds",
+    "availableFundsNonMarginableTrade",
+    "cashBalance",
+  ]);
+  const projectedTradingCash = pickFirstFiniteNumber(projected, [
+    "cashAvailableForTrading",
+    "availableFunds",
+    "availableFundsNonMarginableTrade",
+    "cashBalance",
+  ]);
+
+  const projectionDelta =
+    Number.isFinite(projectedTradingCash) && Number.isFinite(currentTradingCash)
+      ? projectedTradingCash - currentTradingCash
+      : null;
+
+  const candidates = [explicitPending, projectionDelta].filter((value) => Number.isFinite(value));
+  const pendingEstimate = candidates.length ? Math.max(...candidates, 0) : 0;
+
+  let source = "No pending deposit signal";
+  if (Number.isFinite(explicitPending) && explicitPending > 0) {
+    source = "From Schwab pending cash balance field";
+  } else if (Number.isFinite(projectionDelta) && projectionDelta > 0) {
+    source = "From Schwab projected vs current cash delta";
+  }
+
+  return {
+    pendingEstimate,
+    source,
+    currentTradingCash,
+    projectedTradingCash,
+  };
+}
+
 function renderPortfolioView() {
   if (!schwabSession.connected) {
     workspaceTableWrap.innerHTML = `
@@ -2402,6 +2459,29 @@ function renderSchwabConnectView() {
   const connectedAt = schwabSession.connectedAt
     ? new Date(schwabSession.connectedAt).toLocaleString()
     : "Not connected";
+  const linkedAccounts = getLinkedAccounts();
+  const pendingSignals = linkedAccounts.map((account) => ({
+    accountLabel:
+      account?.securitiesAccount?.accountNumber ||
+      account?.securitiesAccount?.hashValue ||
+      account?.accountNumber ||
+      "-",
+    ...getAccountPendingDepositSignal(account),
+  }));
+  const totalPendingEstimate = pendingSignals.reduce((sum, item) => sum + Number(item.pendingEstimate || 0), 0);
+  const pendingRows = pendingSignals
+    .map((row) => {
+      const hasPending = Number(row.pendingEstimate || 0) > 0;
+      return `
+        <li>
+          Account ${escapeHtml(String(row.accountLabel))}: ${
+            hasPending ? formatMoney(row.pendingEstimate) : "No pending amount detected"
+          }
+          <span class="settings-desc">(${escapeHtml(row.source)})</span>
+        </li>
+      `;
+    })
+    .join("");
 
   workspaceTableWrap.innerHTML = `
     <div class="schwab-view">
@@ -2428,9 +2508,26 @@ function renderSchwabConnectView() {
           <h4>Last connected</h4>
           <div class="schwab-metric-value small">${connectedAt}</div>
         </article>
+        <article class="schwab-metric-card">
+          <h4>Pending Deposits (Estimate)</h4>
+          <div class="schwab-metric-value small">${formatMoney(totalPendingEstimate)}</div>
+        </article>
       </section>
 
       <section class="schwab-grid">
+        ${
+          isConnected
+            ? `
+        <article class="schwab-card">
+          <h4>Pending Cash Activity</h4>
+          <p class="schwab-card-sub">Incoming deposits can take time to settle. This card tracks pending cash signals from your Schwab balance payload.</p>
+          <ul class="schwab-list">
+            ${pendingRows || "<li>No connected account balances yet.</li>"}
+          </ul>
+        </article>
+        `
+            : ""
+        }
         <article class="schwab-card">
           <h4>Connection Actions</h4>
           <p class="schwab-card-sub">Use secure OAuth to connect your Schwab identity to this session.</p>
@@ -2947,6 +3044,13 @@ function activateTab(tabName) {
 
   if (tabName === SCHWAB_CONNECT_TAB) {
     renderSchwabConnectView();
+    if (schwabSession.connected) {
+      loadSchwabContextData()
+        .then(() => {
+          if (currentTab === SCHWAB_CONNECT_TAB) renderSchwabConnectView();
+        })
+        .catch(() => ({}));
+    }
     return;
   }
   if (tabName === PORTFOLIO_TAB) {
