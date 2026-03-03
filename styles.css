@@ -1186,6 +1186,65 @@ grid-template-columns: 320px 1fr;
   color: #ffd9ea;
 }
 
+.cart-toolbar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.cart-add-input {
+  max-width: 220px;
+}
+
+.cart-footer {
+  margin-top: 12px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cart-auto-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #bfd2f5;
+  font-size: 12px;
+}
+
+.cart-input-symbol {
+  min-width: 96px;
+}
+
+.cart-remove-btn {
+  padding: 6px 10px;
+}
+
+.cart-table th,
+.cart-table td {
+  white-space: nowrap;
+}
+
+.cart-sell-strip {
+  margin-bottom: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.cart-sell-label {
+  color: #9fb4dc;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.cart-sell-chip {
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
 .funding-required-card {
   border-color: #5b4a6e;
   background: linear-gradient(180deg, #1a1c34 0%, #13172d 100%);

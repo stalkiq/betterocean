@@ -11,6 +11,7 @@ const workspaceTableWrap = document.getElementById("workspaceTableWrap");
 const chatPanelTitle = document.getElementById("chatPanelTitle");
 const chatPanelBadge = document.getElementById("chatPanelBadge");
 const workspaceRefreshBtn = document.getElementById("workspaceRefreshBtn");
+const openShoppingCartBtn = document.getElementById("openShoppingCartBtn");
 
 const DO_API_BASE = "https://api.digitalocean.com";
 const TOKEN_KEY = "do_api_token";
@@ -20,6 +21,7 @@ const PORTFOLIO_TAB = "My Portfolio";
 const INVESTMENTS_TAB = "Investments";
 const TICKER_INTEL_TAB = "Ticker Intel";
 const TIME_TAB = "Time";
+const SHOPPING_TAB = "Shopping";
 const HOME_TAB = SCHWAB_CONNECT_TAB;
 const SCHWAB_FUNDING_URL = "https://www.schwab.com/fund-your-account";
 const RESPONSE_STYLE_PROMPT =
@@ -127,6 +129,11 @@ let tickerIntelState = {
   reportCache: {},
   reportCacheAt: {},
   quotesUpdatedAt: 0,
+};
+let shoppingState = {
+  items: [],
+  submitting: false,
+  status: "",
 };
 let marketCountdownTimer = null;
 let marketOpenThemeTimer = null;
@@ -1715,15 +1722,16 @@ async function logoutSchwab() {
   activateTab(SCHWAB_CONNECT_TAB);
 }
 
-function buildEquityMarketOrder({ side, symbol, quantity }) {
-  return {
+function buildEquityOrder({ side, symbol, quantity, orderType = "MARKET", duration = "DAY", limitPrice, stopPrice }) {
+  const cleanType = String(orderType || "MARKET").toUpperCase();
+  const order = {
     session: "NORMAL",
-    duration: "DAY",
-    orderType: "MARKET",
+    duration: String(duration || "DAY").toUpperCase() === "GTC" ? "GOOD_TILL_CANCEL" : "DAY",
+    orderType: cleanType,
     orderStrategyType: "SINGLE",
     orderLegCollection: [
       {
-        instruction: side,
+        instruction: String(side || "BUY").toUpperCase(),
         quantity,
         instrument: {
           symbol,
@@ -1732,6 +1740,123 @@ function buildEquityMarketOrder({ side, symbol, quantity }) {
       },
     ],
   };
+  if (cleanType === "LIMIT" || cleanType === "STOP_LIMIT") {
+    order.price = Number(limitPrice);
+  }
+  if (cleanType === "STOP" || cleanType === "STOP_LIMIT") {
+    order.stopPrice = Number(stopPrice);
+  }
+  return order;
+}
+
+function buildEquityMarketOrder({ side, symbol, quantity }) {
+  return buildEquityOrder({ side, symbol, quantity, orderType: "MARKET", duration: "DAY" });
+}
+
+function createShoppingCartItem(symbol = "") {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    symbol: String(symbol || "").toUpperCase(),
+    side: "BUY",
+    quantity: 1,
+    orderType: "MARKET",
+    duration: "DAY",
+    limitPrice: "",
+    stopPrice: "",
+    autoMode: false,
+  };
+}
+
+function validateShoppingItem(item) {
+  const symbol = String(item?.symbol || "")
+    .trim()
+    .toUpperCase();
+  if (!symbol) return "Ticker is required.";
+  if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(symbol)) return "Use a valid ticker symbol (example: AAPL, SPY, BRK.B).";
+  const quantity = Number(item?.quantity || 0);
+  if (!Number.isFinite(quantity) || quantity <= 0) return "Quantity must be greater than zero.";
+  const type = String(item?.orderType || "MARKET").toUpperCase();
+  if (type === "LIMIT" || type === "STOP_LIMIT") {
+    const p = Number(item?.limitPrice || 0);
+    if (!Number.isFinite(p) || p <= 0) return "Limit price must be greater than zero.";
+  }
+  if (type === "STOP" || type === "STOP_LIMIT") {
+    const s = Number(item?.stopPrice || 0);
+    if (!Number.isFinite(s) || s <= 0) return "Stop price must be greater than zero.";
+  }
+  return "";
+}
+
+async function getAutoOrderOverrides(item) {
+  if (!item?.autoMode) return {};
+  const symbol = String(item.symbol || "")
+    .trim()
+    .toUpperCase();
+  if (!symbol) return {};
+  try {
+    const report = await loadTickerIntelReport(symbol);
+    const signal = String(report?.signal || "neutral").toLowerCase();
+    const side = signal === "bearish" ? "SELL" : "BUY";
+    return {
+      side,
+      orderType: "MARKET",
+    };
+  } catch {
+    return {};
+  }
+}
+
+async function submitShoppingCartOrders() {
+  if (!schwabSession.connected) throw new Error("Connect Schwab first.");
+  if (!shoppingState.items.length) throw new Error("Your cart is empty.");
+
+  shoppingState = { ...shoppingState, submitting: true, status: "Submitting orders..." };
+  renderShoppingView();
+
+  const results = [];
+  for (const item of shoppingState.items) {
+    const validationError = validateShoppingItem(item);
+    if (validationError) {
+      results.push({ symbol: item.symbol || "-", ok: false, message: validationError });
+      continue;
+    }
+    try {
+      const auto = await getAutoOrderOverrides(item);
+      const finalSide = String(auto.side || item.side || "BUY").toUpperCase();
+      const finalType = String(auto.orderType || item.orderType || "MARKET").toUpperCase();
+      const order = buildEquityOrder({
+        side: finalSide,
+        symbol: String(item.symbol || "").toUpperCase(),
+        quantity: Number(item.quantity || 0),
+        orderType: finalType,
+        duration: item.duration || "DAY",
+        limitPrice: item.limitPrice,
+        stopPrice: item.stopPrice,
+      });
+      await schwabApi("/api/schwab/orders", {
+        method: "POST",
+        body: JSON.stringify({ order }),
+      });
+      results.push({
+        symbol: item.symbol || "-",
+        ok: true,
+        message: `${finalSide} ${item.quantity} ${item.symbol} submitted`,
+      });
+    } catch (error) {
+      results.push({ symbol: item.symbol || "-", ok: false, message: error.message || "Order failed" });
+    }
+  }
+
+  const successCount = results.filter((r) => r.ok).length;
+  const failCount = results.length - successCount;
+  shoppingState = {
+    ...shoppingState,
+    submitting: false,
+    status: `Submitted ${successCount} order(s), ${failCount} failed.`,
+  };
+  appendChatMessage("assistant", shoppingState.status, failCount ? "msg-muted" : "msg-success");
+  if (successCount > 0) await loadSchwabContextData().catch(() => ({}));
+  renderShoppingView();
 }
 
 function isFundingRelatedOrderError(message) {
@@ -2250,6 +2375,202 @@ function renderSchwabConnectView() {
   });
 }
 
+function renderShoppingView() {
+  const isConnected = Boolean(schwabSession.connected);
+  const sellChoices = (Array.isArray(schwabData.accounts) ? schwabData.accounts : [])
+    .flatMap((account) => (Array.isArray(account?.securitiesAccount?.positions) ? account.securitiesAccount.positions : []))
+    .map((position) => ({
+      symbol: String(position?.instrument?.symbol || "").toUpperCase(),
+      qty: Math.max(0, Math.floor(Number(position?.longQuantity || 0))),
+      marketValue: Number(position?.marketValue || 0),
+    }))
+    .filter((p) => p.symbol && p.qty > 0)
+    .sort((a, b) => b.marketValue - a.marketValue)
+    .slice(0, 10);
+
+  const rowsHtml = shoppingState.items
+    .map((item) => {
+      const needsLimit = item.orderType === "LIMIT" || item.orderType === "STOP_LIMIT";
+      const needsStop = item.orderType === "STOP" || item.orderType === "STOP_LIMIT";
+      return `
+      <tr data-cart-row="${item.id}">
+        <td><input class="trade-input cart-input-symbol" data-cart-symbol value="${escapeHtml(item.symbol)}" placeholder="AAPL" /></td>
+        <td>
+          <select class="trade-input" data-cart-side>
+            <option value="BUY" ${item.side === "BUY" ? "selected" : ""}>Buy</option>
+            <option value="SELL" ${item.side === "SELL" ? "selected" : ""}>Sell</option>
+          </select>
+        </td>
+        <td><input class="trade-input" data-cart-qty type="number" min="1" step="1" value="${Number(item.quantity) || 1}" /></td>
+        <td>
+          <select class="trade-input" data-cart-order-type>
+            <option value="MARKET" ${item.orderType === "MARKET" ? "selected" : ""}>Market</option>
+            <option value="LIMIT" ${item.orderType === "LIMIT" ? "selected" : ""}>Limit</option>
+            <option value="STOP" ${item.orderType === "STOP" ? "selected" : ""}>Stop</option>
+            <option value="STOP_LIMIT" ${item.orderType === "STOP_LIMIT" ? "selected" : ""}>Stop Limit</option>
+          </select>
+        </td>
+        <td><input class="trade-input" data-cart-limit type="number" min="0.01" step="0.01" value="${escapeHtml(item.limitPrice || "")}" ${needsLimit ? "" : "disabled"} /></td>
+        <td><input class="trade-input" data-cart-stop type="number" min="0.01" step="0.01" value="${escapeHtml(item.stopPrice || "")}" ${needsStop ? "" : "disabled"} /></td>
+        <td>
+          <select class="trade-input" data-cart-duration>
+            <option value="DAY" ${item.duration === "DAY" ? "selected" : ""}>Day</option>
+            <option value="GTC" ${item.duration === "GTC" ? "selected" : ""}>GTC</option>
+          </select>
+        </td>
+        <td><label class="cart-auto-label"><input type="checkbox" data-cart-auto ${item.autoMode ? "checked" : ""} /> Auto</label></td>
+        <td><button type="button" class="schwab-btn schwab-btn-ghost cart-remove-btn" data-cart-remove>Remove</button></td>
+      </tr>
+    `;
+    })
+    .join("");
+
+  workspaceTableWrap.innerHTML = `
+    <div class="agent-view">
+      <section class="agent-hero">
+        <h3>Shopping Cart</h3>
+        <p>Build buy and sell orders, then submit straight to Schwab. Auto mode uses Gradient ticker intelligence to bias side/type before submit.</p>
+      </section>
+      <section class="schwab-card">
+        ${
+          sellChoices.length
+            ? `
+          <div class="cart-sell-strip">
+            <span class="cart-sell-label">Quick Sell From Portfolio:</span>
+            ${sellChoices
+              .map(
+                (choice) =>
+                  `<button type="button" class="schwab-btn schwab-btn-ghost cart-sell-chip" data-quick-sell-symbol="${escapeHtml(
+                    choice.symbol
+                  )}" data-quick-sell-qty="${choice.qty}">${escapeHtml(choice.symbol)} (${choice.qty})</button>`
+              )
+              .join("")}
+          </div>
+        `
+            : ""
+        }
+        <div class="cart-toolbar">
+          <input id="cartNewSymbol" class="trade-input cart-add-input" placeholder="Add ticker (AAPL)" ${isConnected ? "" : "disabled"} />
+          <button type="button" class="schwab-btn schwab-btn-primary" id="cartAddBtn" ${isConnected ? "" : "disabled"}>Add Ticker</button>
+          <button type="button" class="schwab-btn schwab-btn-ghost" id="cartClearBtn" ${isConnected ? "" : "disabled"}>Clear</button>
+        </div>
+        <div class="table-wrap">
+          <table class="cart-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th>Qty</th>
+                <th>Order Type</th>
+                <th>Limit</th>
+                <th>Stop</th>
+                <th>TIF</th>
+                <th>Auto</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml || '<tr><td colspan="9">No orders in cart yet.</td></tr>'}</tbody>
+          </table>
+        </div>
+        <div class="cart-footer">
+          <div class="trade-status ${shoppingState.submitting ? "pending" : ""}">${escapeHtml(
+            shoppingState.status || (isConnected ? "Ready to submit." : "Connect Schwab to start trading.")
+          )}</div>
+          <button type="button" class="schwab-btn schwab-btn-primary" id="cartSubmitBtn" ${
+            isConnected && shoppingState.items.length && !shoppingState.submitting ? "" : "disabled"
+          }>Submit Cart</button>
+        </div>
+      </section>
+    </div>
+  `;
+
+  const addBtn = document.getElementById("cartAddBtn");
+  const newSymbolInput = document.getElementById("cartNewSymbol");
+  const clearBtn = document.getElementById("cartClearBtn");
+  const submitBtn = document.getElementById("cartSubmitBtn");
+  if (addBtn && newSymbolInput) {
+    addBtn.addEventListener("click", () => {
+      const symbol = String(newSymbolInput.value || "")
+        .trim()
+        .toUpperCase();
+      if (!symbol) return;
+      shoppingState = { ...shoppingState, items: [...shoppingState.items, createShoppingCartItem(symbol)], status: "" };
+      renderShoppingView();
+    });
+  }
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      shoppingState = { ...shoppingState, items: [], status: "Cart cleared." };
+      renderShoppingView();
+    });
+  }
+  if (submitBtn) {
+    submitBtn.addEventListener("click", () => {
+      submitShoppingCartOrders().catch((error) => {
+        shoppingState = { ...shoppingState, submitting: false, status: error.message || "Cart submit failed." };
+        renderShoppingView();
+      });
+    });
+  }
+
+  const rowEls = workspaceTableWrap.querySelectorAll("[data-cart-row]");
+  rowEls.forEach((rowEl) => {
+    const id = rowEl.getAttribute("data-cart-row");
+    if (!id) return;
+    const updateItem = (patch) => {
+      shoppingState = {
+        ...shoppingState,
+        items: shoppingState.items.map((item) => (item.id === id ? { ...item, ...patch } : item)),
+        status: "",
+      };
+      renderShoppingView();
+    };
+    rowEl.querySelector("[data-cart-symbol]")?.addEventListener("change", (e) => {
+      updateItem({ symbol: String(e.target.value || "").trim().toUpperCase() });
+    });
+    rowEl.querySelector("[data-cart-side]")?.addEventListener("change", (e) => updateItem({ side: e.target.value || "BUY" }));
+    rowEl.querySelector("[data-cart-qty]")?.addEventListener("change", (e) =>
+      updateItem({ quantity: Number(e.target.value || 0) })
+    );
+    rowEl.querySelector("[data-cart-order-type]")?.addEventListener("change", (e) => {
+      const nextType = String(e.target.value || "MARKET").toUpperCase();
+      updateItem({ orderType: nextType });
+    });
+    rowEl.querySelector("[data-cart-limit]")?.addEventListener("change", (e) => updateItem({ limitPrice: e.target.value || "" }));
+    rowEl.querySelector("[data-cart-stop]")?.addEventListener("change", (e) => updateItem({ stopPrice: e.target.value || "" }));
+    rowEl.querySelector("[data-cart-duration]")?.addEventListener("change", (e) =>
+      updateItem({ duration: String(e.target.value || "DAY").toUpperCase() })
+    );
+    rowEl.querySelector("[data-cart-auto]")?.addEventListener("change", (e) => updateItem({ autoMode: Boolean(e.target.checked) }));
+    rowEl.querySelector("[data-cart-remove]")?.addEventListener("click", () => {
+      shoppingState = { ...shoppingState, items: shoppingState.items.filter((item) => item.id !== id), status: "" };
+      renderShoppingView();
+    });
+  });
+
+  const quickSellButtons = workspaceTableWrap.querySelectorAll("[data-quick-sell-symbol]");
+  quickSellButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const symbol = String(btn.getAttribute("data-quick-sell-symbol") || "").toUpperCase();
+      const qty = Number(btn.getAttribute("data-quick-sell-qty") || 1);
+      if (!symbol) return;
+      shoppingState = {
+        ...shoppingState,
+        items: [
+          ...shoppingState.items,
+          {
+            ...createShoppingCartItem(symbol),
+            side: "SELL",
+            quantity: Math.max(1, qty),
+          },
+        ],
+        status: "",
+      };
+      renderShoppingView();
+    });
+  });
+}
+
 function renderSettingsView() {
   const token = getDoToken();
   workspaceTableWrap.innerHTML = `
@@ -2356,7 +2677,8 @@ function activateTab(tabName) {
     tabName !== "Settings" &&
     tabName !== INVESTMENTS_TAB &&
     tabName !== TICKER_INTEL_TAB &&
-    tabName !== TIME_TAB
+    tabName !== TIME_TAB &&
+    tabName !== SHOPPING_TAB
   ) {
     openTabs.add(SCHWAB_CONNECT_TAB);
     currentTab = SCHWAB_CONNECT_TAB;
@@ -2383,6 +2705,8 @@ function activateTab(tabName) {
             ? "Ticker list + Gradient AI deep-dive"
         : tabName === TIME_TAB
           ? "Market open countdown + AI playbook"
+      : tabName === SHOPPING_TAB
+        ? "Build and submit buy/sell cart orders"
       : tabName === "DigitalOcean"
         ? "Account & Droplets"
         : tabName === "Settings"
@@ -2565,6 +2889,10 @@ function activateTab(tabName) {
       });
     return;
   }
+  if (tabName === SHOPPING_TAB) {
+    renderShoppingView();
+    return;
+  }
   if (tabName === "DigitalOcean") {
     loadDoView();
     return;
@@ -2674,6 +3002,10 @@ workspaceRefreshBtn?.addEventListener("click", () => {
     activateTab(TIME_TAB);
     return;
   }
+  if (currentTab === SHOPPING_TAB) {
+    renderShoppingView();
+    return;
+  }
   if (currentTab === "DigitalOcean") {
     loadDoView();
     return;
@@ -2682,6 +3014,11 @@ workspaceRefreshBtn?.addEventListener("click", () => {
   if (agent) {
     loadSchwabContextData().then(() => renderAgentView(agent));
   }
+});
+
+openShoppingCartBtn?.addEventListener("click", () => {
+  openTabs.add(SHOPPING_TAB);
+  activateTab(SHOPPING_TAB);
 });
 
 railButtons.forEach((btn) => {
