@@ -630,6 +630,16 @@ grid-template-columns: 320px 1fr;
  letter-spacing: 0.03em;
 }
 
+.ticker-item-company {
+  display: block;
+  margin-top: 2px;
+  font-size: 10px;
+  color: #9bb0d8;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .ticker-item-top {
  display: flex;
  align-items: center;
@@ -1393,6 +1403,15 @@ grid-template-columns: 320px 1fr;
   justify-content: space-between;
   align-items: center;
   gap: 8px;
+}
+
+.shopping-company-name {
+  color: #9bb2da;
+  font-size: 10px;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .shopping-quote-bottom {

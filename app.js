@@ -107,6 +107,28 @@ let openingPlaybook = { buckets: [], asOf: null };
 let openingQuotesBySymbol = {};
 const DEFAULT_TICKER_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH"];
 const SHOPPING_10_TO_50_SYMBOLS = ["F", "PFE", "BAC", "INTC", "T", "VZ", "KHC", "CCL", "SNAP", "PARA"];
+const SYMBOL_COMPANY_NAMES = {
+  AAPL: "Apple",
+  MSFT: "Microsoft",
+  NVDA: "NVIDIA",
+  AMZN: "Amazon",
+  GOOGL: "Alphabet",
+  META: "Meta",
+  TSLA: "Tesla",
+  JPM: "JPMorgan Chase",
+  XOM: "Exxon Mobil",
+  UNH: "UnitedHealth Group",
+  F: "Ford",
+  PFE: "Pfizer",
+  BAC: "Bank of America",
+  INTC: "Intel",
+  T: "AT&T",
+  VZ: "Verizon",
+  KHC: "Kraft Heinz",
+  CCL: "Carnival",
+  SNAP: "Snap",
+  PARA: "Paramount Global",
+};
 const ETF_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLP", "XLY", "TLT", "GLD"];
 const TECH_FOCUS_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AVGO", "AMD", "INTC", "QCOM", "TSM", "ADBE", "CRM", "ORCL", "META"];
 const DIVIDEND_FOCUS_SYMBOLS = ["KO", "PEP", "PG", "JNJ", "XOM", "CVX", "T", "VZ", "PFE", "MCD", "WMT", "ABBV"];
@@ -321,6 +343,36 @@ function toFiniteNumber(...values) {
   return null;
 }
 
+function normalizeCompanyLabel(rawLabel, symbol = "") {
+  const raw = String(rawLabel || "").trim();
+  if (!raw) return "";
+  const upperRaw = raw.toUpperCase();
+  const upperSymbol = String(symbol || "").toUpperCase();
+  if (!upperSymbol) return raw;
+  if (upperRaw === upperSymbol) return "";
+  if (upperRaw === `${upperSymbol}.US`) return "";
+  if (upperRaw.includes(`(${upperSymbol})`)) {
+    return raw.replace(new RegExp(`\\s*\\(${upperSymbol}\\)\\s*`, "i"), "").trim();
+  }
+  return raw;
+}
+
+function getCompanyName(symbol, quote = null) {
+  const safeSymbol = String(symbol || "").toUpperCase();
+  const fromQuote = normalizeCompanyLabel(
+    quote?.companyName ||
+      quote?.description ||
+      quote?.longName ||
+      quote?.name ||
+      quote?.securityName ||
+      quote?.label ||
+      "",
+    safeSymbol
+  );
+  if (fromQuote) return fromQuote;
+  return SYMBOL_COMPANY_NAMES[safeSymbol] || safeSymbol;
+}
+
 function normalizeUnifiedQuote(input, symbolHint = "") {
   const quote = input?.quote && typeof input.quote === "object" ? input.quote : input || {};
   const symbol = String(input?.symbol || quote?.symbol || symbolHint || "")
@@ -340,8 +392,9 @@ function normalizeUnifiedQuote(input, symbolHint = "") {
     quote?.regularMarketLastPrice
   );
 
+  const companyName = getCompanyName(symbol, input) || symbol;
   if (!Number.isFinite(close) || close <= 0) {
-    return { symbol, label: symbol, unavailable: true };
+    return { symbol, label: companyName, companyName, unavailable: true };
   }
 
   const safeOpen = Number.isFinite(open) && open > 0 ? open : close;
@@ -350,7 +403,8 @@ function normalizeUnifiedQuote(input, symbolHint = "") {
 
   return {
     symbol,
-    label: symbol,
+    label: companyName,
+    companyName,
     open: safeOpen,
     high: safeHigh,
     low: safeLow,
@@ -398,7 +452,10 @@ async function fetchTickerQuoteBatch(symbols) {
       });
       const publicQuotes = Array.isArray(publicData.quotes) ? publicData.quotes : [];
       const publicBySymbol = Object.fromEntries(
-        publicQuotes.map((q) => [String(q?.label || q?.symbol || "").toUpperCase(), q]).filter(([key]) => Boolean(key))
+        publicQuotes
+          .map((q) => normalizeUnifiedQuote(q))
+          .filter((q) => Boolean(q?.symbol))
+          .map((q) => [q.symbol, q])
       );
 
       return schwabQuotes.map((q) => (q?.unavailable && publicBySymbol[q.symbol] ? publicBySymbol[q.symbol] : q));
@@ -464,8 +521,8 @@ async function refreshTickerUniverseQuotes({ rerender = true, force = false } = 
         try {
           const quotes = await fetchTickerQuoteBatch(chunk);
           quotes.forEach((q) => {
-            const key = String(q?.label || q?.symbol || "").toUpperCase();
-            if (key) bySymbol[key] = q;
+            const normalized = normalizeUnifiedQuote(q);
+            if (normalized?.symbol) bySymbol[normalized.symbol] = normalized;
           });
         } catch {
           // Keep going even if a chunk fails.
@@ -778,12 +835,10 @@ function formatPercent(pct) {
 }
 
 function getSignalFromDelta(pct) {
-  if (!Number.isFinite(pct)) return { label: "Need More Data", className: "neutral" };
-  if (pct >= 2) return { label: "Strong Up Trend", className: "bull-strong" };
-  if (pct >= 0.4) return { label: "Looks Strong", className: "bull" };
-  if (pct <= -2) return { label: "Strong Down Trend", className: "bear-strong" };
-  if (pct <= -0.4) return { label: "Looks Weak", className: "bear" };
-  return { label: "Mixed", className: "neutral" };
+  if (!Number.isFinite(pct)) return { label: "No Data", className: "neutral" };
+  if (pct >= 0.4) return { label: "Up", className: pct >= 2 ? "bull-strong" : "bull" };
+  if (pct <= -0.4) return { label: "Down", className: pct <= -2 ? "bear-strong" : "bear" };
+  return { label: "Flat", className: "neutral" };
 }
 
 function renderSignalPill(pct) {
@@ -1146,8 +1201,8 @@ function renderTickerIntelView() {
       const reportForSymbol = tickerIntelState.reportCache[symbol] || null;
       const scorecardForSymbol = getDecisionScorecard(symbol, quote, reportForSymbol);
       const pct = quote ? getOpenDeltaPercent(quote) : null;
-      const signalPill = quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">Need More Data</span>';
       const signal = getSignalFromDelta(pct);
+      const companyName = getCompanyName(symbol, quote);
       const rowToneClass =
         signal.className === "bull-strong" || signal.className === "bull"
           ? "tone-strong"
@@ -1173,8 +1228,8 @@ function renderTickerIntelView() {
         <span class="ticker-item-top">
           <span class="ticker-item-symbol">${symbol}</span>
           <span class="ticker-score-badge">${scorecardForSymbol.overall || "--"}/100</span>
-          ${signalPill}
         </span>
+        <span class="ticker-item-company">${escapeHtml(companyName)}</span>
         <span class="ticker-item-bottom">
           <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
           <span class="${trendClass}">${formatPercent(pct)}</span>
@@ -2642,13 +2697,14 @@ function renderShoppingView() {
       const quote = shoppingState.quoteBySymbol?.[holding.symbol];
       const pct = quote ? getOpenDeltaPercent(quote) : null;
       const toneClass = !Number.isFinite(pct) ? "value-flat" : pct > 0 ? "value-up" : pct < 0 ? "value-down" : "value-flat";
+      const companyName = getCompanyName(holding.symbol, quote);
       return `
         <button type="button" class="shopping-quote-tile shopping-holding-tile" data-cart-add-symbol="${escapeHtml(
           holding.symbol
         )}">
           <span class="shopping-quote-top">
             <strong>${escapeHtml(holding.symbol)}</strong>
-            ${quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">No Data</span>'}
+            <span class="shopping-company-name">${escapeHtml(companyName)}</span>
           </span>
           <span class="shopping-quote-bottom">
             <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
@@ -2664,11 +2720,12 @@ function renderShoppingView() {
       const quote = shoppingState.quoteBySymbol?.[symbol];
       const pct = quote ? getOpenDeltaPercent(quote) : null;
       const toneClass = !Number.isFinite(pct) ? "value-flat" : pct > 0 ? "value-up" : pct < 0 ? "value-down" : "value-flat";
+      const companyName = getCompanyName(symbol, quote);
       return `
         <button type="button" class="shopping-quote-tile" data-cart-add-symbol="${escapeHtml(symbol)}">
           <span class="shopping-quote-top">
             <strong>${escapeHtml(symbol)}</strong>
-            ${quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">No Data</span>'}
+            <span class="shopping-company-name">${escapeHtml(companyName)}</span>
           </span>
           <span class="shopping-quote-bottom">
             <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
