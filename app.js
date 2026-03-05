@@ -17,7 +17,7 @@ const DO_API_BASE = "https://api.digitalocean.com";
 const TOKEN_KEY = "do_api_token";
 const API_CHAT_URL = "/api/chat/message";
 const SCHWAB_CONNECT_TAB = "Schwab Connect";
-const PORTFOLIO_TAB = "My Portfolio";
+const PORTFOLIO_TAB = "My Holdings";
 const INVESTMENTS_TAB = "Investments";
 const TICKER_INTEL_TAB = "Ticker Intel";
 const TIME_TAB = "Time";
@@ -94,7 +94,7 @@ const AGENTS = [
 const AGENT_BY_ID = Object.fromEntries(AGENTS.map((agent) => [agent.id, agent]));
 const AGENT_BY_TAB = Object.fromEntries(AGENTS.map((agent) => [agent.tab, agent]));
 
-const openTabs = new Set([HOME_TAB, INVESTMENTS_TAB, TICKER_INTEL_TAB, TIME_TAB]);
+const openTabs = new Set([HOME_TAB, PORTFOLIO_TAB, INVESTMENTS_TAB, TICKER_INTEL_TAB, TIME_TAB]);
 let currentTab = HOME_TAB;
 let currentAgentId = AGENTS[0].id;
 const announcedAgents = new Set();
@@ -1760,7 +1760,7 @@ function renderPortfolioView() {
   workspaceTableWrap.innerHTML = `
     <div class="agent-view">
       <section class="agent-hero">
-        <h3>Investment Accounts & Positions</h3>
+        <h3>My Holdings</h3>
         <p>Auto-loaded from your connected Schwab profile. Review account balances and open equity positions in one place.</p>
       </section>
       <section class="schwab-metrics">
@@ -2177,6 +2177,16 @@ function setChatContextFromAgent(agent, announce = false) {
   }
 }
 
+function isPermanentTab(tabName) {
+  return (
+    tabName === HOME_TAB ||
+    tabName === PORTFOLIO_TAB ||
+    tabName === INVESTMENTS_TAB ||
+    tabName === TICKER_INTEL_TAB ||
+    tabName === TIME_TAB
+  );
+}
+
 function renderTabs(activeTab = HOME_TAB) {
   topTabs.innerHTML = "";
   [...openTabs].forEach((tabName) => {
@@ -2188,7 +2198,7 @@ function renderTabs(activeTab = HOME_TAB) {
     label.textContent = tabName;
     btn.appendChild(label);
 
-    if (tabName !== HOME_TAB) {
+    if (!isPermanentTab(tabName)) {
       const close = document.createElement("button");
       close.type = "button";
       close.className = "top-tab-close";
@@ -2207,14 +2217,7 @@ function renderTabs(activeTab = HOME_TAB) {
 }
 
 function closeTab(tabName) {
-  if (
-    tabName === HOME_TAB ||
-    tabName === INVESTMENTS_TAB ||
-    tabName === TICKER_INTEL_TAB ||
-    tabName === TIME_TAB ||
-    !openTabs.has(tabName)
-  )
-    return;
+  if (isPermanentTab(tabName) || !openTabs.has(tabName)) return;
   const tabs = [...openTabs];
   const currentIndex = tabs.indexOf(tabName);
   openTabs.delete(tabName);
@@ -3046,7 +3049,6 @@ function activateTab(tabName) {
   if (
     !schwabSession.connected &&
     tabName !== SCHWAB_CONNECT_TAB &&
-    tabName !== "Settings" &&
     tabName !== INVESTMENTS_TAB &&
     tabName !== TICKER_INTEL_TAB &&
     tabName !== TIME_TAB &&
@@ -3079,10 +3081,6 @@ function activateTab(tabName) {
           ? "Market open countdown + AI playbook"
       : tabName === SHOPPING_TAB
         ? "Build and submit buy/sell cart orders"
-      : tabName === "DigitalOcean"
-        ? "Account & Droplets"
-        : tabName === "Settings"
-          ? "API token"
           : "Blank workspace";
 
   renderTabs(tabName);
@@ -3273,14 +3271,6 @@ function activateTab(tabName) {
     renderShoppingView();
     return;
   }
-  if (tabName === "DigitalOcean") {
-    loadDoView();
-    return;
-  }
-  if (tabName === "Settings") {
-    renderSettingsView();
-    return;
-  }
   if (agent) {
     currentAgentId = agent.id;
     setChatContextFromAgent(agent, true);
@@ -3384,10 +3374,6 @@ workspaceRefreshBtn?.addEventListener("click", () => {
   }
   if (currentTab === SHOPPING_TAB) {
     renderShoppingView();
-    return;
-  }
-  if (currentTab === "DigitalOcean") {
-    loadDoView();
     return;
   }
   const agent = AGENT_BY_TAB[currentTab];
@@ -3572,6 +3558,7 @@ async function initApp() {
   }
 
   renderTabs(HOME_TAB);
+  openTabs.add(PORTFOLIO_TAB);
   openTabs.add(INVESTMENTS_TAB);
   openTabs.add(TICKER_INTEL_TAB);
   openTabs.add(TIME_TAB);
