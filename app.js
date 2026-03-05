@@ -832,6 +832,67 @@ function getShoppingHoldingSymbols(limit = 10) {
   return getShoppingHoldings(limit).map((item) => item.symbol);
 }
 
+function getCartEstimatedBuyCost() {
+  const items = Array.isArray(shoppingState.items) ? shoppingState.items : [];
+  let estimated = 0;
+  let unresolvedCount = 0;
+  for (const item of items) {
+    const side = String(item?.side || "BUY").toUpperCase();
+    if (side !== "BUY") continue;
+    const qty = Math.max(0, Number(item?.quantity || 0));
+    if (!Number.isFinite(qty) || qty <= 0) continue;
+    const symbol = String(item?.symbol || "").toUpperCase();
+    const quote = shoppingState.quoteBySymbol?.[symbol];
+    const quotePrice = Number(quote?.close);
+    const limitPrice = Number(item?.limitPrice);
+    const stopPrice = Number(item?.stopPrice);
+    const orderType = String(item?.orderType || "MARKET").toUpperCase();
+    let unitPrice = quotePrice;
+    if (orderType === "LIMIT" || orderType === "STOP_LIMIT") {
+      unitPrice = Number.isFinite(limitPrice) && limitPrice > 0 ? limitPrice : quotePrice;
+    } else if (orderType === "STOP") {
+      unitPrice = Number.isFinite(stopPrice) && stopPrice > 0 ? stopPrice : quotePrice;
+    }
+    if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
+      unresolvedCount += 1;
+      continue;
+    }
+    estimated += qty * unitPrice;
+  }
+  return { estimatedCost: estimated, unresolvedCount };
+}
+
+function getShoppingFundingSnapshot() {
+  const accounts = getLinkedAccounts();
+  const availableToTrade = accounts.reduce((sum, account) => {
+    const balances = account?.securitiesAccount?.currentBalances || {};
+    const value = pickFirstFiniteNumber(balances, [
+      "cashAvailableForTrading",
+      "availableFunds",
+      "availableFundsNonMarginableTrade",
+      "buyingPower",
+      "cashBalance",
+    ]);
+    return sum + (Number.isFinite(value) ? value : 0);
+  }, 0);
+  const investedAmount = accounts.reduce((sum, account) => {
+    const balances = account?.securitiesAccount?.currentBalances || {};
+    const value = pickFirstFiniteNumber(balances, ["longMarketValue", "marketValue", "liquidationValue"]);
+    return sum + (Number.isFinite(value) ? value : 0);
+  }, 0);
+  const { estimatedCost, unresolvedCount } = getCartEstimatedBuyCost();
+  const remainingAfterCart = availableToTrade - estimatedCost;
+  return {
+    accountCount: accounts.length,
+    availableToTrade,
+    investedAmount,
+    cartEstimatedCost: estimatedCost,
+    unresolvedCount,
+    remainingAfterCart,
+    cartOverage: Math.max(0, -remainingAfterCart),
+  };
+}
+
 async function refreshShoppingQuotes({ force = false } = {}) {
   const symbols = getShoppingWatchSymbols();
   if (!symbols.length || shoppingState.loadingQuotes) return;
@@ -2573,6 +2634,8 @@ function renderShoppingView() {
   const isConnected = Boolean(schwabSession.connected);
   const marketOpen = isUsMarketOpenNow();
   const hasBuyOrders = shoppingState.items.some((item) => String(item?.side || "BUY").toUpperCase() === "BUY");
+  const funding = getShoppingFundingSnapshot();
+  const hasFundingData = isConnected && funding.accountCount > 0;
   const holdings = getShoppingHoldings(10);
   const sellChoices = holdings;
   const pinnedHoldings = holdings.slice(0, 8);
@@ -2697,6 +2760,42 @@ function renderShoppingView() {
           </div>
         </div>
       </section>
+      <section class="schwab-metrics">
+        <article class="schwab-metric-card">
+          <h4>Available To Trade</h4>
+          <div class="schwab-metric-value small">${hasFundingData ? formatMoney(funding.availableToTrade) : "-"}</div>
+        </article>
+        <article class="schwab-metric-card">
+          <h4>Currently Invested</h4>
+          <div class="schwab-metric-value small">${hasFundingData ? formatMoney(funding.investedAmount) : "-"}</div>
+        </article>
+        <article class="schwab-metric-card">
+          <h4>Cart Buy Estimate</h4>
+          <div class="schwab-metric-value small">${formatMoney(funding.cartEstimatedCost)}</div>
+          ${
+            funding.unresolvedCount > 0
+              ? `<div class="settings-desc">${funding.unresolvedCount} buy order(s) missing price estimate.</div>`
+              : ""
+          }
+        </article>
+        <article class="schwab-metric-card">
+          <h4>Remaining After Cart</h4>
+          <div class="schwab-metric-value small ${
+            hasFundingData
+              ? funding.remainingAfterCart < 0
+                ? "value-down"
+                : "value-up"
+              : ""
+          }">${hasFundingData ? formatMoney(funding.remainingAfterCart) : "-"}</div>
+        </article>
+      </section>
+      ${
+        hasFundingData && funding.cartOverage > 0
+          ? `<section class="schwab-card"><p class="schwab-card-sub value-down">Cart exceeds available funds by ${formatMoney(
+              funding.cartOverage
+            )}. Schwab may reject some buy orders.</p></section>`
+          : ""
+      }
       <section class="schwab-card">
         <h4>Live Stock Board</h4>
         <p class="schwab-card-sub">Click any stock to add it to your cart with live price and signal context.</p>
@@ -3212,7 +3311,15 @@ function activateTab(tabName) {
     return;
   }
   if (tabName === SHOPPING_TAB) {
-    renderShoppingView();
+    if (schwabSession.connected) {
+      loadSchwabContextData()
+        .catch(() => ({}))
+        .finally(() => {
+          if (currentTab === SHOPPING_TAB) renderShoppingView();
+        });
+    } else {
+      renderShoppingView();
+    }
     return;
   }
   if (agent) {
