@@ -22,6 +22,7 @@ const INVESTMENTS_TAB = "Investments";
 const TICKER_INTEL_TAB = "Ticker Intel";
 const TIME_TAB = "Time";
 const SHOPPING_TAB = "Shopping";
+const TICKER_DETAIL_TAB_PREFIX = "Ticker ";
 const HOME_TAB = SCHWAB_CONNECT_TAB;
 const SCHWAB_FUNDING_URL = "https://www.schwab.com/fund-your-account";
 const RESPONSE_STYLE_PROMPT =
@@ -128,6 +129,23 @@ const SYMBOL_COMPANY_NAMES = {
   CCL: "Carnival",
   SNAP: "Snap",
   PARA: "Paramount Global",
+};
+const COMPANY_SUCCESS_NOTES = {
+  AAPL: "Apple sells devices and services with strong customer loyalty and recurring revenue.",
+  MSFT: "Microsoft combines cloud software and enterprise tools used by businesses worldwide.",
+  NVDA: "NVIDIA leads AI and graphics chips used across data centers, gaming, and computing.",
+  AMZN: "Amazon pairs global e-commerce scale with cloud infrastructure through AWS.",
+  GOOGL: "Alphabet monetizes search and digital ads while investing in long-term technology platforms.",
+  META: "Meta operates large social platforms and ad systems with billions of daily users.",
+  TSLA: "Tesla combines EV manufacturing, software updates, and energy products in one brand.",
+  JPM: "JPMorgan is a diversified bank with strong consumer, investment, and asset management businesses.",
+  XOM: "Exxon Mobil is an integrated energy company with global production and refining operations.",
+  UNH: "UnitedHealth combines health insurance scale with care and data operations through Optum.",
+  T: "AT&T provides wireless and fiber connectivity to large U.S. customer bases.",
+  VZ: "Verizon runs a large telecom network with recurring subscription-based revenue.",
+  INTC: "Intel designs and sells processors used in PCs, servers, and enterprise systems.",
+  BAC: "Bank of America is a major U.S. bank with diversified consumer and business lines.",
+  PFE: "Pfizer develops and commercializes medicines with global distribution and research depth.",
 };
 const ETF_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLP", "XLY", "TLT", "GLD"];
 const TECH_FOCUS_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AVGO", "AMD", "INTC", "QCOM", "TSM", "ADBE", "CRM", "ORCL", "META"];
@@ -371,6 +389,29 @@ function getCompanyName(symbol, quote = null) {
   );
   if (fromQuote) return fromQuote;
   return SYMBOL_COMPANY_NAMES[safeSymbol] || safeSymbol;
+}
+
+function getCompanySuccessNote(symbol) {
+  const safeSymbol = String(symbol || "").toUpperCase();
+  return (
+    COMPANY_SUCCESS_NOTES[safeSymbol] ||
+    `${getCompanyName(safeSymbol)} is a public company many investors follow for size, brand, and market relevance.`
+  );
+}
+
+function isTickerDetailTab(tabName) {
+  return String(tabName || "").startsWith(TICKER_DETAIL_TAB_PREFIX);
+}
+
+function getTickerSymbolFromDetailTab(tabName) {
+  return String(tabName || "")
+    .replace(TICKER_DETAIL_TAB_PREFIX, "")
+    .trim()
+    .toUpperCase();
+}
+
+function getTickerDetailTabName(symbol) {
+  return `${TICKER_DETAIL_TAB_PREFIX}${String(symbol || "").trim().toUpperCase()}`;
 }
 
 function normalizeUnifiedQuote(input, symbolHint = "") {
@@ -1191,14 +1232,11 @@ function renderTickerIntelLoading() {
 
 function renderTickerIntelView() {
   const selected = tickerIntelState.selected || DEFAULT_TICKER_WATCHLIST[0];
-  const report = tickerIntelState.report;
   const filtered = getFilteredTickerUniverse();
   const counts = getTickerFilterCounts();
   const watchlistHtml = filtered
     .map((symbol) => {
       const quote = tickerIntelState.quoteBySymbol[symbol];
-      const reportForSymbol = tickerIntelState.reportCache[symbol] || null;
-      const scorecardForSymbol = getDecisionScorecard(symbol, quote, reportForSymbol);
       const pct = quote ? getOpenDeltaPercent(quote) : null;
       const signal = getSignalFromDelta(pct);
       const companyName = getCompanyName(symbol, quote);
@@ -1211,8 +1249,6 @@ function renderTickerIntelView() {
       const warningChips = getWarningChipsForTicker(symbol, quote)
         .map((chip) => `<span class="warning-chip ${chip.className}">${escapeHtml(chip.text)}</span>`)
         .join("");
-      const simpleStatus = getSimpleTickerStatus(scorecardForSymbol);
-      const simpleWhy = getSimpleTickerWhy(quote, scorecardForSymbol);
       const trendClass = !Number.isFinite(pct)
         ? "value-flat"
         : pct > 0
@@ -1224,233 +1260,38 @@ function renderTickerIntelView() {
       <button type="button" class="ticker-item ${rowToneClass} ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
         <span class="ticker-item-top">
           <span class="ticker-item-symbol">${symbol}</span>
-          <span class="ticker-score-badge">${scorecardForSymbol.overall || "--"}/100</span>
+          ${quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">No Data</span>'}
         </span>
         <span class="ticker-item-company">${escapeHtml(companyName)}</span>
         <span class="ticker-item-bottom">
           <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
           <span class="${trendClass}">${formatPercent(pct)}</span>
         </span>
-        <span class="ticker-item-context">${escapeHtml(simpleStatus)}</span>
-        <span class="ticker-item-context muted">${escapeHtml(simpleWhy)}</span>
+        <span class="ticker-item-context muted">${escapeHtml(getCompanySuccessNote(symbol))}</span>
         ${warningChips ? `<span class="ticker-warning-row">${warningChips}</span>` : ""}
       </button>
     `;
     })
     .join("");
 
-  const quote = report?.quote;
-  const openDelta = quote ? getOpenDeltaPercent(quote) : null;
-  const selectedScorecard = getDecisionScorecard(selected, quote, report);
-  const selectedReadiness = getTradeReadiness(quote, selectedScorecard);
-  const selectedFit = getPortfolioFit(selected, quote, selectedScorecard);
-  const detailTab = tickerIntelState.detailTab || "rating";
-  const quickTake =
-    selectedScorecard.overall >= 75
-      ? "Clear setup right now."
-      : selectedScorecard.overall >= 60
-        ? "Promising, but wait for cleaner entry."
-        : selectedScorecard.overall >= 45
-          ? "Mixed setup. Keep risk small."
-          : "Higher risk. Better to wait.";
-  const topIdeas = filtered
-    .map((symbol) => {
-      const q = tickerIntelState.quoteBySymbol[symbol];
-      const r = tickerIntelState.reportCache[symbol] || null;
-      const score = getDecisionScorecard(symbol, q, r);
-      return { symbol, score: score.overall, label: score.label };
-    })
-    .filter((row) => row.score > 0)
-    .slice(0, 5);
-  const quoteSummary = quote
-    ? `
-      <section class="ticker-quote-grid">
-        <article class="schwab-metric-card"><h4>Current Price</h4><div class="schwab-metric-value small">${renderPriceCell(
-          quote.close
-        )}</div></article>
-        <article class="schwab-metric-card"><h4>Today Change</h4><div class="schwab-metric-value small ${
-          openDelta > 0 ? "value-up" : openDelta < 0 ? "value-down" : "value-flat"
-        }">${formatPercent(openDelta)}</div></article>
-        <article class="schwab-metric-card"><h4>Today Range</h4><div class="schwab-metric-value small">${renderPriceCell(
-          quote.low
-        )} - ${renderPriceCell(quote.high)}</div></article>
-      </section>
-    `
-    : "";
-
-  const newsHtml = Array.isArray(report?.newsUsed)
-    ? report.newsUsed
-        .slice(0, 8)
-        .map(
-          (item) => `
-            <li>
-              <a href="${escapeHtml(item.link || "#")}" target="_blank" rel="noopener noreferrer">${escapeHtml(
-                item.title || "Untitled headline"
-              )}</a>
-              <span>${escapeHtml(item.source || "News")} ${item.pubDate ? `• ${escapeHtml(item.pubDate)}` : ""}</span>
-            </li>
-          `
-        )
-        .join("")
-    : "";
-  const debate = report?.debate || {};
-  const bullDebate = debate.bullAnalyst || {};
-  const bearDebate = debate.bearAnalyst || {};
-  const refereeDebate = debate.referee || {};
-  const debateHtml =
-    bullDebate.thesis || bearDebate.thesis || refereeDebate.summary
-      ? `
-      <section class="schwab-card">
-        <h4>Two-Sided AI View</h4>
-        <p class="schwab-card-sub">One AI explains the upside, one explains the downside, and a final AI gives the balanced call.</p>
-        <section class="ticker-report-grid">
-          <article class="schwab-card">
-            <h4>Upside View</h4>
-            <p class="schwab-card-sub">${escapeHtml(bullDebate.thesis || "No bullish thesis generated.")}</p>
-            <ul class="ticker-bullets">${renderListItems(bullDebate.points)}</ul>
-          </article>
-          <article class="schwab-card">
-            <h4>Downside View</h4>
-            <p class="schwab-card-sub">${escapeHtml(bearDebate.thesis || "No bearish thesis generated.")}</p>
-            <ul class="ticker-bullets">${renderListItems(bearDebate.points)}</ul>
-          </article>
-          <article class="schwab-card">
-            <h4>Balanced Summary</h4>
-            <p class="schwab-card-sub">${escapeHtml(
-              refereeDebate.summary || "No referee summary available."
-            )}</p>
-            <ul class="ticker-bullets">
-              <li>Overall call: ${escapeHtml(String(refereeDebate.verdict || report.signal || "neutral"))}</li>
-              <li>Suggested stance: ${escapeHtml(String(refereeDebate.actionBias || "balanced"))}</li>
-              <li>How sure AI is: ${escapeHtml(String(refereeDebate.confidence || report.confidence || "medium"))}</li>
-            </ul>
-          </article>
-        </section>
-      </section>
-    `
-      : "";
-
-  const reportHtml = tickerIntelState.error
-    ? `<div class="do-error"><strong>Error</strong><p>${escapeHtml(tickerIntelState.error)}</p></div>`
-    : tickerIntelState.loading
-      ? `<div class="do-loading">Building deep-dive report for ${selected}...</div>`
-      : !report
-      ? '<div class="do-loading">Choose a ticker to load a report.</div>'
-      : `
-      <header class="ticker-report-header">
-        <div>
-          <h3>${escapeHtml(report.symbol || selected)} Deep-Dive</h3>
-          <p>${escapeHtml(report.overview || "No overview available.")}</p>
-        </div>
-        <div class="ticker-report-signal">
-          ${toSignalBadge(report.signal)}
-          <span class="settings-desc">How sure we are: ${escapeHtml(report.confidence || "medium")}</span>
-        </div>
-      </header>
-      ${quoteSummary}
-      <section class="quick-take-bar">
-        <strong>Quick Take:</strong> ${escapeHtml(quickTake)}
-      </section>
-      <section class="detail-tab-row">
-        <button type="button" class="detail-tab-btn ${detailTab === "rating" ? "active" : ""}" data-detail-tab="rating">Rating</button>
-        <button type="button" class="detail-tab-btn ${detailTab === "plan" ? "active" : ""}" data-detail-tab="plan">Plan</button>
-        <button type="button" class="detail-tab-btn ${detailTab === "fit" ? "active" : ""}" data-detail-tab="fit">Account Fit</button>
-      </section>
-      <section class="ticker-report-grid ${detailTab === "rating" ? "" : "hidden-section"}">
-        <article class="schwab-card decision-overall">
-          <h4>Investability Score</h4>
-          <div class="decision-score-main">${selectedScorecard.overall}<span>/100</span></div>
-          <div class="decision-rating">${"★".repeat(selectedScorecard.rating)}${"☆".repeat(5 - selectedScorecard.rating)}</div>
-          <p class="schwab-card-sub">${selectedScorecard.label}</p>
-        </article>
-        <article class="schwab-card">
-          <h4>Decision Scorecard</h4>
-          <div class="decision-subscore-grid">
-            <div><span>Trend strength</span><strong>${selectedScorecard.trendStrength}</strong></div>
-            <div><span>Risk control</span><strong>${selectedScorecard.riskLevel}</strong></div>
-            <div><span>Value setup</span><strong>${selectedScorecard.valuation}</strong></div>
-            <div><span>News tone</span><strong>${selectedScorecard.newsSentiment}</strong></div>
-            <div><span>Catalyst power</span><strong>${selectedScorecard.catalystStrength}</strong></div>
-          </div>
-        </article>
-      </section>
-      <section class="ticker-report-grid ${detailTab === "plan" ? "" : "hidden-section"}">
-        <article class="schwab-card">
-          <h4>Trade Readiness</h4>
-          ${
-            selectedReadiness
-              ? `
-          <div class="decision-subscore-grid">
-            <div><span>Entry zone</span><strong>${renderPriceCell(selectedReadiness.entryLow)} - ${renderPriceCell(selectedReadiness.entryHigh)}</strong></div>
-            <div><span>Upside target</span><strong>${renderPriceCell(selectedReadiness.target)}</strong></div>
-            <div><span>Risk line (stop)</span><strong>${renderPriceCell(selectedReadiness.stop)}</strong></div>
-            <div><span>Risk / reward</span><strong>${selectedReadiness.rr.toFixed(2)}:1</strong></div>
-            <div><span>Suggested shares</span><strong>${selectedReadiness.shares.toLocaleString()}</strong></div>
-            <div><span>Position size</span><strong>${formatMoney(selectedReadiness.positionValue)}</strong></div>
-            <div><span>If target hits</span><strong class="value-up">+${formatMoney(selectedReadiness.upsideDollar)}</strong></div>
-            <div><span>If stop hits</span><strong class="value-down">-${formatMoney(selectedReadiness.downsideDollar)}</strong></div>
-          </div>
-          `
-              : '<p class="schwab-card-sub">Not enough price data yet to compute trade numbers.</p>'
-          }
-        </article>
-      </section>
-      <section class="ticker-report-grid ${detailTab === "fit" ? "" : "hidden-section"}">
-        <article class="schwab-card">
-          <h4>Portfolio Fit</h4>
-          <div class="decision-subscore-grid">
-            <div><span>Fit score</span><strong>${selectedFit.fitScore}/100</strong></div>
-            <div><span>Cash needed (1 share)</span><strong>${formatMoney(selectedFit.requiredCash)}</strong></div>
-            <div><span>Available cash</span><strong>${formatMoney(selectedFit.availableCash)}</strong></div>
-            <div><span>Cash ready</span><strong>${selectedFit.cashReady ? "Yes" : "No"}</strong></div>
-            <div><span>Already in portfolio</span><strong>${selectedFit.alreadyHeld ? "Yes" : "No"}</strong></div>
-            <div><span>Concentration impact</span><strong>${Number(selectedFit.concentrationPct || 0).toFixed(1)}%</strong></div>
-          </div>
-          <p class="schwab-card-sub">This helps prioritize ideas that match your current account, not just market hype.</p>
-        </article>
-      </section>
-      <section class="schwab-card ${detailTab === "plan" ? "" : "hidden-section"}">
-        <h4>Top 5 Easiest Choices Right Now</h4>
-        <div class="ticker-priority-list">
-          ${
-            topIdeas.length
-              ? topIdeas
-                  .map(
-                    (idea, idx) =>
-                      `<button type="button" class="ticker-priority-item" data-ticker="${escapeHtml(idea.symbol)}"><span>#${
-                        idx + 1
-                      } ${escapeHtml(idea.symbol)}</span><span>${idea.score}/100 • ${escapeHtml(idea.label)}</span></button>`
-                  )
-                  .join("")
-              : '<div class="settings-desc">No ranked ideas yet. Refresh prices to populate scores.</div>'
-          }
-        </div>
-      </section>
-      ${debateHtml}
-      <section class="ticker-report-grid">
-        <article class="schwab-card"><h4>Why It Could Go Up</h4><ul class="ticker-bullets">${renderListItems(
-          report.bullishFactors
-        )}</ul></article>
-        <article class="schwab-card"><h4>Why It Could Go Down</h4><ul class="ticker-bullets">${renderListItems(
-          report.bearishFactors
-        )}</ul></article>
-        <article class="schwab-card"><h4>What To Watch</h4><ul class="ticker-bullets">${renderListItems(
-          report.neutralFactors
-        )}</ul></article>
-        <article class="schwab-card"><h4>Upcoming Events</h4><ul class="ticker-bullets">${renderListItems(
-          report.catalystWatch
-        )}</ul></article>
-      </section>
-      <section class="schwab-card">
-        <h4>Risk Warnings</h4>
-        <ul class="ticker-bullets">${renderListItems(report.riskFlags)}</ul>
-        <p class="schwab-card-sub">${escapeHtml(report.narrativeSummary || "")}</p>
-      </section>
-      <section class="schwab-card">
-        <h4>Recent News Used By AI</h4>
-        <ul class="ticker-news-list">${newsHtml || '<li class="settings-desc">No recent headlines available.</li>'}</ul>
-      </section>
-    `;
+  const selectedQuote = tickerIntelState.quoteBySymbol[selected];
+  const selectedCompany = getCompanyName(selected, selectedQuote);
+  const selectedPct = selectedQuote ? getOpenDeltaPercent(selectedQuote) : null;
+  const rightPaneHtml = `
+    <div class="schwab-card">
+      <h3>Ticker Workspace</h3>
+      <p class="schwab-card-sub">Market Coverage stays on the left. Click a ticker to open a dedicated tab with simple company details.</p>
+      <div class="trade-readiness-grid">
+        <div><span>Selected ticker</span><strong>${escapeHtml(selected)}</strong></div>
+        <div><span>Company</span><strong>${escapeHtml(selectedCompany)}</strong></div>
+        <div><span>Price</span><strong>${selectedQuote ? renderPriceCell(selectedQuote.close) : "-"}</strong></div>
+        <div><span>Today</span><strong class="${selectedPct > 0 ? "value-up" : selectedPct < 0 ? "value-down" : "value-flat"}">${formatPercent(
+          selectedPct
+        )}</strong></div>
+      </div>
+      <p class="schwab-card-sub">This right side is intentionally minimal so you can decide later what to show here.</p>
+    </div>
+  `;
 
   workspaceTableWrap.innerHTML = `
     <section class="ticker-intel-layout">
@@ -1499,7 +1340,7 @@ function renderTickerIntelView() {
         <div class="ticker-items">${watchlistHtml || '<div class="settings-desc">No symbols match the current filters.</div>'}</div>
       </aside>
       <article class="ticker-intel-report">
-        ${reportHtml}
+        ${rightPaneHtml}
       </article>
     </section>
   `;
@@ -1566,44 +1407,98 @@ function wireTickerIntelEvents() {
     btn.addEventListener("click", () => {
       const symbol = btn.dataset.ticker;
       if (!symbol) return;
-      tickerIntelState = { ...tickerIntelState, selected: symbol, loading: true, error: "" };
-      renderTickerIntelLoading();
-      loadTickerIntelReport(symbol)
-        .then(() => {
-          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
-        })
-        .catch((error) => {
-          tickerIntelState = {
-            ...tickerIntelState,
-            loading: false,
-            report: null,
-            error: error.message || "Failed to load ticker report.",
-          };
-          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
-        });
+      const safeSymbol = String(symbol).toUpperCase();
+      tickerIntelState = { ...tickerIntelState, selected: safeSymbol, loading: false, error: "" };
+      openTabs.add(getTickerDetailTabName(safeSymbol));
+      activateTab(getTickerDetailTabName(safeSymbol));
     });
   });
   workspaceTableWrap.querySelectorAll(".ticker-priority-item").forEach((btn) => {
     btn.addEventListener("click", () => {
       const symbol = btn.dataset.ticker;
       if (!symbol) return;
-      tickerIntelState = { ...tickerIntelState, selected: symbol, loading: true, error: "" };
-      renderTickerIntelLoading();
-      loadTickerIntelReport(symbol)
-        .then(() => {
-          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
-        })
-        .catch((error) => {
-          tickerIntelState = {
-            ...tickerIntelState,
-            loading: false,
-            report: null,
-            error: error.message || "Failed to load ticker report.",
-          };
-          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
-        });
+      const safeSymbol = String(symbol).toUpperCase();
+      tickerIntelState = { ...tickerIntelState, selected: safeSymbol, loading: false, error: "" };
+      openTabs.add(getTickerDetailTabName(safeSymbol));
+      activateTab(getTickerDetailTabName(safeSymbol));
     });
   });
+}
+
+function renderTickerDetailView(symbol) {
+  const safeSymbol = String(symbol || "").trim().toUpperCase();
+  if (!safeSymbol) {
+    workspaceTableWrap.innerHTML = '<div class="do-error"><strong>Error</strong><p>Invalid ticker symbol.</p></div>';
+    return;
+  }
+
+  const cachedQuote = tickerIntelState.quoteBySymbol[safeSymbol] || null;
+
+  const renderDetail = (quote) => {
+    const movePct = quote ? getOpenDeltaPercent(quote) : null;
+    const moveClass = !Number.isFinite(movePct) ? "value-flat" : movePct > 0 ? "value-up" : movePct < 0 ? "value-down" : "value-flat";
+    workspaceTableWrap.innerHTML = `
+      <section class="agent-view">
+        <section class="agent-hero">
+          <h3>${escapeHtml(safeSymbol)} - ${escapeHtml(getCompanyName(safeSymbol, quote))}</h3>
+          <p>${escapeHtml(getCompanySuccessNote(safeSymbol))}</p>
+        </section>
+        <section class="schwab-metrics">
+          <article class="schwab-metric-card">
+            <h4>Price</h4>
+            <div class="schwab-metric-value small">${quote ? renderPriceCell(quote.close) : "-"}</div>
+          </article>
+          <article class="schwab-metric-card">
+            <h4>Today</h4>
+            <div class="schwab-metric-value small ${moveClass}">${formatPercent(movePct)}</div>
+          </article>
+          <article class="schwab-metric-card">
+            <h4>Open / High / Low</h4>
+            <div class="schwab-metric-value small">${
+              quote ? `${renderPriceCell(quote.open)} / ${renderPriceCell(quote.high)} / ${renderPriceCell(quote.low)}` : "-"
+            }</div>
+          </article>
+        </section>
+        <section class="schwab-grid">
+          <article class="schwab-card">
+            <h4>What this company does</h4>
+            <p class="schwab-card-sub">${escapeHtml(getCompanySuccessNote(safeSymbol))}</p>
+          </article>
+          <article class="schwab-card">
+            <h4>Why many investors know this name</h4>
+            <ul class="ticker-bullets">
+              <li>Large public-company visibility and regular financial reporting.</li>
+              <li>Clear products/services people or businesses use every day.</li>
+              <li>Frequent market coverage, so price moves are watched closely.</li>
+            </ul>
+          </article>
+        </section>
+      </section>
+    `;
+  };
+
+  renderDetail(cachedQuote);
+  fetchTickerQuoteBatch([safeSymbol])
+    .then((quotes) => {
+      const nextQuote = Array.isArray(quotes) && quotes.length ? normalizeUnifiedQuote(quotes[0], safeSymbol) : null;
+      if (nextQuote) {
+        tickerIntelState = {
+          ...tickerIntelState,
+          quoteBySymbol: {
+            ...tickerIntelState.quoteBySymbol,
+            [safeSymbol]: nextQuote,
+          },
+        };
+      }
+      if (currentTab === getTickerDetailTabName(safeSymbol)) {
+        renderDetail(nextQuote || cachedQuote);
+      }
+    })
+    .catch(() => {
+      if (currentTab === getTickerDetailTabName(safeSymbol)) {
+        renderDetail(cachedQuote);
+      }
+    });
 }
 
 function getLinkedAccounts() {
@@ -3099,7 +2994,8 @@ function activateTab(tabName) {
     tabName !== INVESTMENTS_TAB &&
     tabName !== TICKER_INTEL_TAB &&
     tabName !== TIME_TAB &&
-    tabName !== SHOPPING_TAB
+    tabName !== SHOPPING_TAB &&
+    !isTickerDetailTab(tabName)
   ) {
     openTabs.add(SCHWAB_CONNECT_TAB);
     currentTab = SCHWAB_CONNECT_TAB;
@@ -3123,11 +3019,13 @@ function activateTab(tabName) {
       : tabName === INVESTMENTS_TAB
         ? "Public market dashboard"
           : tabName === TICKER_INTEL_TAB
-            ? "Ticker list + Gradient AI deep-dive"
+            ? "Market coverage list + separate ticker tabs"
         : tabName === TIME_TAB
           ? "Market open countdown + AI playbook"
       : tabName === SHOPPING_TAB
         ? "Build and submit buy/sell cart orders"
+      : isTickerDetailTab(tabName)
+        ? "Simple ticker snapshot"
           : "Blank workspace";
 
   renderTabs(tabName);
@@ -3192,12 +3090,7 @@ function activateTab(tabName) {
         if (needsFreshQuotes) {
           refreshTickerUniverseQuotes({ rerender: true }).catch(() => ({}));
         }
-        const nextSymbol = tickerIntelState.universe.includes(tickerIntelState.selected)
-          ? tickerIntelState.selected
-          : tickerIntelState.universe[0] || "AAPL";
-        return loadTickerIntelReport(nextSymbol);
       })
-      .then(() => renderTickerIntelView())
       .catch((error) => {
         tickerIntelState = {
           ...tickerIntelState,
@@ -3207,6 +3100,10 @@ function activateTab(tabName) {
         };
         renderTickerIntelView();
       });
+    return;
+  }
+  if (isTickerDetailTab(tabName)) {
+    renderTickerDetailView(getTickerSymbolFromDetailTab(tabName));
     return;
   }
   if (tabName === TIME_TAB) {
