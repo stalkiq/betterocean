@@ -2049,25 +2049,34 @@ async function submitShoppingCartOrders() {
         body: JSON.stringify({ order }),
       });
       results.push({
+        id: item.id,
         symbol: item.symbol || "-",
         ok: true,
         message: `${finalSide} ${item.quantity} ${item.symbol} submitted`,
       });
     } catch (error) {
-      results.push({ symbol: item.symbol || "-", ok: false, message: error.message || "Order failed" });
+      results.push({ id: item.id, symbol: item.symbol || "-", ok: false, message: error.message || "Order failed" });
     }
   }
 
   const successCount = results.filter((r) => r.ok).length;
   const failCount = results.length - successCount;
   const firstFailure = results.find((r) => !r.ok)?.message || "";
+  const submittedIds = new Set(results.filter((r) => r.ok && r.id).map((r) => String(r.id)));
+  const nextItems = shoppingState.items.filter((item) => !submittedIds.has(String(item.id)));
   shoppingState = {
     ...shoppingState,
+    items: nextItems,
     submitting: false,
     status: `Submitted ${successCount} order(s), ${failCount} failed.${firstFailure ? ` ${firstFailure}` : ""}`,
   };
   appendChatMessage("assistant", shoppingState.status, failCount ? "msg-muted" : "msg-success");
-  if (successCount > 0) await loadSchwabContextData().catch(() => ({}));
+  if (successCount > 0) {
+    // Pull fresh Schwab balances/positions after order submit so the summary strip updates quickly.
+    await loadSchwabContextData().catch(() => ({}));
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    await loadSchwabContextData().catch(() => ({}));
+  }
   renderShoppingView();
 }
 
