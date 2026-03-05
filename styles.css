@@ -1347,6 +1347,31 @@ grid-template-columns: 320px 1fr;
   gap: 10px;
 }
 
+.shopping-quote-grid-pinned {
+  margin-top: 6px;
+  margin-bottom: 12px;
+}
+
+.shopping-pinned-head {
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.shopping-pinned-title {
+  color: #dce8ff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.shopping-pinned-sub {
+  color: #93a9d1;
+  font-size: 11px;
+}
+
 .shopping-quote-tile {
   border: 1px solid #2f456a;
   background: #0e1a2f;
@@ -1373,6 +1398,18 @@ grid-template-columns: 320px 1fr;
 .shopping-quote-bottom {
   margin-top: 7px;
   font-size: 13px;
+}
+
+.shopping-holding-tile {
+  border-color: #4d6ea5;
+  background: linear-gradient(180deg, #12213a 0%, #0f1d33 100%);
+}
+
+.shopping-holding-meta {
+  margin-top: 6px;
+  display: block;
+  color: #9bb3dd;
+  font-size: 11px;
 }
 
 .funding-required-card {

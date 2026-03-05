@@ -710,10 +710,28 @@ function startShoppingMarketClock() {
 
 function getShoppingWatchSymbols() {
   return uniqueSymbols([
+    ...getShoppingHoldingSymbols(10),
     ...SHOPPING_10_TO_50_SYMBOLS,
     ...DEFAULT_TICKER_WATCHLIST,
     ...shoppingState.items.map((item) => String(item?.symbol || "").toUpperCase()),
   ]).slice(0, 20);
+}
+
+function getShoppingHoldings(limit = 10) {
+  return (Array.isArray(schwabData.accounts) ? schwabData.accounts : [])
+    .flatMap((account) => (Array.isArray(account?.securitiesAccount?.positions) ? account.securitiesAccount.positions : []))
+    .map((position) => ({
+      symbol: String(position?.instrument?.symbol || "").toUpperCase(),
+      qty: Math.max(0, Math.floor(Number(position?.longQuantity || 0))),
+      marketValue: Number(position?.marketValue || 0),
+    }))
+    .filter((p) => p.symbol && p.qty > 0)
+    .sort((a, b) => b.marketValue - a.marketValue)
+    .slice(0, limit);
+}
+
+function getShoppingHoldingSymbols(limit = 10) {
+  return getShoppingHoldings(limit).map((item) => item.symbol);
 }
 
 async function refreshShoppingQuotes({ force = false } = {}) {
@@ -2612,17 +2630,32 @@ function renderShoppingView() {
   const isConnected = Boolean(schwabSession.connected);
   const marketOpen = isUsMarketOpenNow();
   const hasBuyOrders = shoppingState.items.some((item) => String(item?.side || "BUY").toUpperCase() === "BUY");
-  const sellChoices = (Array.isArray(schwabData.accounts) ? schwabData.accounts : [])
-    .flatMap((account) => (Array.isArray(account?.securitiesAccount?.positions) ? account.securitiesAccount.positions : []))
-    .map((position) => ({
-      symbol: String(position?.instrument?.symbol || "").toUpperCase(),
-      qty: Math.max(0, Math.floor(Number(position?.longQuantity || 0))),
-      marketValue: Number(position?.marketValue || 0),
-    }))
-    .filter((p) => p.symbol && p.qty > 0)
-    .sort((a, b) => b.marketValue - a.marketValue)
-    .slice(0, 10);
+  const holdings = getShoppingHoldings(10);
+  const sellChoices = holdings;
+  const pinnedHoldings = holdings.slice(0, 8);
   const watchSymbols = getShoppingWatchSymbols();
+  const pinnedHoldingsHtml = pinnedHoldings
+    .map((holding) => {
+      const quote = shoppingState.quoteBySymbol?.[holding.symbol];
+      const pct = quote ? getOpenDeltaPercent(quote) : null;
+      const toneClass = !Number.isFinite(pct) ? "value-flat" : pct > 0 ? "value-up" : pct < 0 ? "value-down" : "value-flat";
+      return `
+        <button type="button" class="shopping-quote-tile shopping-holding-tile" data-cart-add-symbol="${escapeHtml(
+          holding.symbol
+        )}">
+          <span class="shopping-quote-top">
+            <strong>${escapeHtml(holding.symbol)}</strong>
+            ${quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">No Data</span>'}
+          </span>
+          <span class="shopping-quote-bottom">
+            <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
+            <span class="${toneClass}">${formatPercent(pct)}</span>
+          </span>
+          <span class="shopping-holding-meta">Held: ${holding.qty} · Value: ${formatMoney(holding.marketValue)}</span>
+        </button>
+      `;
+    })
+    .join("");
   const quoteTiles = watchSymbols
     .map((symbol) => {
       const quote = shoppingState.quoteBySymbol?.[symbol];
@@ -2722,6 +2755,19 @@ function renderShoppingView() {
       <section class="schwab-card">
         <h4>Live Stock Board</h4>
         <p class="schwab-card-sub">Click any stock to add it to your cart with live price and signal context.</p>
+        ${
+          isConnected
+            ? `
+        <div class="shopping-pinned-head">
+          <span class="shopping-pinned-title">Pinned: My Holdings</span>
+          <span class="shopping-pinned-sub">${pinnedHoldings.length} symbols from your connected Schwab portfolio</span>
+        </div>
+        <div class="shopping-quote-grid shopping-quote-grid-pinned">${
+          pinnedHoldingsHtml || '<div class="settings-desc">No current holdings found.</div>'
+        }</div>
+        `
+            : ""
+        }
         <div class="shopping-quote-grid">${quoteTiles || '<div class="settings-desc">No symbols loaded yet.</div>'}</div>
       </section>
       <section class="schwab-card">
