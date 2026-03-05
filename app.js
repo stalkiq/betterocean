@@ -1194,7 +1194,6 @@ function renderTickerIntelView() {
   const report = tickerIntelState.report;
   const filtered = getFilteredTickerUniverse();
   const counts = getTickerFilterCounts();
-  const totalUniverse = tickerIntelState.universe.length || DEFAULT_TICKER_WATCHLIST.length;
   const watchlistHtml = filtered
     .map((symbol) => {
       const quote = tickerIntelState.quoteBySymbol[symbol];
@@ -1212,8 +1211,6 @@ function renderTickerIntelView() {
       const warningChips = getWarningChipsForTicker(symbol, quote)
         .map((chip) => `<span class="warning-chip ${chip.className}">${escapeHtml(chip.text)}</span>`)
         .join("");
-      const confidenceTag = getConfidenceTag(reportForSymbol);
-      const riskTag = getRiskLevelTag(scorecardForSymbol);
       const simpleStatus = getSimpleTickerStatus(scorecardForSymbol);
       const simpleWhy = getSimpleTickerWhy(quote, scorecardForSymbol);
       const trendClass = !Number.isFinite(pct)
@@ -1236,10 +1233,6 @@ function renderTickerIntelView() {
         </span>
         <span class="ticker-item-context">${escapeHtml(simpleStatus)}</span>
         <span class="ticker-item-context muted">${escapeHtml(simpleWhy)}</span>
-        <span class="ticker-meta-row">
-          <span class="meta-pill ${escapeHtml(confidenceTag.className)}">${escapeHtml(confidenceTag.text)}</span>
-          <span class="meta-pill ${escapeHtml(riskTag.className)}">${escapeHtml(riskTag.text)}</span>
-        </span>
         ${warningChips ? `<span class="ticker-warning-row">${warningChips}</span>` : ""}
       </button>
     `;
@@ -1463,9 +1456,6 @@ function renderTickerIntelView() {
     <section class="ticker-intel-layout">
       <aside class="ticker-intel-list">
         <h4>Market Coverage</h4>
-        <p class="settings-desc">Showing ${filtered.length}/${totalUniverse} symbols • quotes loaded ${
-          tickerIntelState.loadedQuotes
-        }/${totalUniverse}${tickerIntelState.loadingUniverse ? " (updating...)" : ""}</p>
         <div class="coverage-legend">
           <span class="legend-chip good">Good setup</span>
           <span class="legend-chip caution">Use caution</span>
@@ -1485,14 +1475,14 @@ function renderTickerIntelView() {
             tickerIntelState.search || ""
           )}" />
           <select id="tickerSignalFilter" class="trade-input">
-            <option value="all" ${tickerIntelState.signalFilter === "all" ? "selected" : ""}>All Ratings (${counts.total})</option>
-            <option value="bullish" ${tickerIntelState.signalFilter === "bullish" ? "selected" : ""}>Looks Strong (${counts.signal.bullish})</option>
-            <option value="bearish" ${tickerIntelState.signalFilter === "bearish" ? "selected" : ""}>Looks Weak (${counts.signal.bearish})</option>
+            <option value="all" ${tickerIntelState.signalFilter === "all" ? "selected" : ""}>Ratings</option>
+            <option value="bullish" ${tickerIntelState.signalFilter === "bullish" ? "selected" : ""}>Up (${counts.signal.bullish})</option>
+            <option value="bearish" ${tickerIntelState.signalFilter === "bearish" ? "selected" : ""}>Down (${counts.signal.bearish})</option>
             <option value="neutral" ${tickerIntelState.signalFilter === "neutral" ? "selected" : ""}>Mixed (${counts.signal.neutral})</option>
-            <option value="no-data" ${tickerIntelState.signalFilter === "no-data" ? "selected" : ""}>Need More Data (${counts.signal["no-data"]})</option>
+            <option value="no-data" ${tickerIntelState.signalFilter === "no-data" ? "selected" : ""}>No Data (${counts.signal["no-data"]})</option>
           </select>
           <select id="tickerPriceFilter" class="trade-input">
-            <option value="all" ${tickerIntelState.priceFilter === "all" ? "selected" : ""}>All Prices (${counts.total})</option>
+            <option value="all" ${tickerIntelState.priceFilter === "all" ? "selected" : ""}>Prices</option>
             <option value="under20" ${tickerIntelState.priceFilter === "under20" ? "selected" : ""}>Under $20 (${counts.price.under20})</option>
             <option value="20to100" ${tickerIntelState.priceFilter === "20to100" ? "selected" : ""}>$20 - $100 (${counts.price["20to100"]})</option>
             <option value="100to500" ${tickerIntelState.priceFilter === "100to500" ? "selected" : ""}>$100 - $500 (${counts.price["100to500"]})</option>
