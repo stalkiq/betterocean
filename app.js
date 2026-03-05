@@ -106,6 +106,7 @@ let investmentsMarket = { assets: [], updatedAt: null };
 let openingPlaybook = { buckets: [], asOf: null };
 let openingQuotesBySymbol = {};
 const DEFAULT_TICKER_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH"];
+const SHOPPING_10_TO_50_SYMBOLS = ["F", "PFE", "BAC", "INTC", "T", "VZ", "KHC", "CCL", "SNAP", "PARA"];
 const ETF_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLP", "XLY", "TLT", "GLD"];
 const TECH_FOCUS_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AVGO", "AMD", "INTC", "QCOM", "TSM", "ADBE", "CRM", "ORCL", "META"];
 const DIVIDEND_FOCUS_SYMBOLS = ["KO", "PEP", "PG", "JNJ", "XOM", "CVX", "T", "VZ", "PFE", "MCD", "WMT", "ABBV"];
@@ -709,6 +710,7 @@ function startShoppingMarketClock() {
 
 function getShoppingWatchSymbols() {
   return uniqueSymbols([
+    ...SHOPPING_10_TO_50_SYMBOLS,
     ...DEFAULT_TICKER_WATCHLIST,
     ...shoppingState.items.map((item) => String(item?.symbol || "").toUpperCase()),
   ]).slice(0, 20);
