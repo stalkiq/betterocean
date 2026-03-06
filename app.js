@@ -1941,15 +1941,22 @@ async function logoutSchwab() {
 
 function buildEquityOrder({ side, symbol, quantity, orderType = "MARKET", duration = "DAY", limitPrice, stopPrice }) {
   const cleanType = String(orderType || "MARKET").toUpperCase();
+  const cleanSide = String(side || "BUY").toUpperCase();
+  const cleanQuantity = Math.max(1, Math.floor(Number(quantity || 0)));
   const order = {
     session: "NORMAL",
     duration: String(duration || "DAY").toUpperCase() === "GTC" ? "GOOD_TILL_CANCEL" : "DAY",
     orderType: cleanType,
+    complexOrderStrategyType: "NONE",
+    quantity: cleanQuantity,
     orderStrategyType: "SINGLE",
     orderLegCollection: [
       {
-        instruction: String(side || "BUY").toUpperCase(),
-        quantity,
+        orderLegType: "EQUITY",
+        legId: 1,
+        instruction: cleanSide,
+        positionEffect: cleanSide === "SELL" ? "CLOSING" : "OPENING",
+        quantity: cleanQuantity,
         instrument: {
           symbol,
           assetType: "EQUITY",
@@ -1968,6 +1975,87 @@ function buildEquityOrder({ side, symbol, quantity, orderType = "MARKET", durati
 
 function buildEquityMarketOrder({ side, symbol, quantity }) {
   return buildEquityOrder({ side, symbol, quantity, orderType: "MARKET", duration: "DAY" });
+}
+
+function getOrderLeg(order) {
+  return Array.isArray(order?.orderLegCollection) ? order.orderLegCollection[0] || null : null;
+}
+
+function getOrderLegSymbol(order) {
+  return String(getOrderLeg(order)?.instrument?.symbol || "")
+    .trim()
+    .toUpperCase();
+}
+
+function getOrderLegInstruction(order) {
+  return String(getOrderLeg(order)?.instruction || "")
+    .trim()
+    .toUpperCase();
+}
+
+function getOrderLegQuantity(order) {
+  const raw = Number(getOrderLeg(order)?.quantity ?? order?.quantity ?? NaN);
+  return Number.isFinite(raw) ? raw : null;
+}
+
+function extractPolledOrderMessage(order) {
+  if (!order || typeof order !== "object") return "";
+  const textCandidates = [
+    order.statusDescription,
+    order.statusReason,
+    order.rejectReason,
+    order.rejectionReason,
+    order.cancelMessage,
+    order.cancelReason,
+    order.destinationLinkName,
+  ];
+  for (const candidate of textCandidates) {
+    const text = String(candidate || "").trim();
+    if (text) return text;
+  }
+  const arrayCandidates = [order.messages, order.orderMessages, order.orderActivityCollection];
+  for (const list of arrayCandidates) {
+    if (!Array.isArray(list)) continue;
+    for (const entry of list) {
+      const text = String(
+        entry?.message ||
+          entry?.description ||
+          entry?.activityType ||
+          entry?.executionType ||
+          entry?.status ||
+          ""
+      ).trim();
+      if (text) return text;
+    }
+  }
+  return "";
+}
+
+function matchRecentSubmittedOrder(orders, { orderId, symbol, quantity, side, submittedAt }) {
+  const safeOrderId = String(orderId || "").trim();
+  if (safeOrderId) {
+    return orders.find((order) => String(order?.orderId || "").trim() === safeOrderId) || null;
+  }
+
+  const safeSymbol = String(symbol || "").trim().toUpperCase();
+  const safeSide = String(side || "").trim().toUpperCase();
+  const safeQuantity = Number(quantity);
+  const submittedFloor = Number.isFinite(submittedAt) ? submittedAt - 2 * 60 * 1000 : Date.now() - 2 * 60 * 1000;
+
+  const candidates = orders.filter((order) => {
+    const entered = Date.parse(order?.enteredTime || "");
+    if (!Number.isFinite(entered) || entered < submittedFloor) return false;
+    if (safeSymbol && getOrderLegSymbol(order) !== safeSymbol) return false;
+    if (safeSide && getOrderLegInstruction(order) && getOrderLegInstruction(order) !== safeSide) return false;
+    if (Number.isFinite(safeQuantity)) {
+      const orderQty = getOrderLegQuantity(order);
+      if (Number.isFinite(orderQty) && orderQty !== safeQuantity) return false;
+    }
+    return true;
+  });
+
+  if (candidates.length !== 1) return null;
+  return candidates[0];
 }
 
 function createShoppingCartItem(symbol = "") {
@@ -2014,17 +2102,11 @@ async function getAiOrderPlanForItem(item) {
   return response?.plan || null;
 }
 
-async function pollSubmittedOrderOutcome({ orderId, symbol, maxAttempts = 6, delayMs = 1200 }) {
-  const safeSymbol = String(symbol || "").toUpperCase();
+async function pollSubmittedOrderOutcome({ orderId, symbol, quantity, side, submittedAt, maxAttempts = 6, delayMs = 1200 }) {
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     const data = await schwabApi("/api/schwab/orders/recent?maxResults=20", { method: "GET" });
     const orders = Array.isArray(data?.orders) ? data.orders : [];
-    const orderMatch =
-      (orderId && orders.find((o) => String(o?.orderId || "") === String(orderId))) ||
-      orders.find((o) =>
-        Array.isArray(o?.orderLegCollection) &&
-        o.orderLegCollection.some((leg) => String(leg?.instrument?.symbol || "").toUpperCase() === safeSymbol)
-      );
+    const orderMatch = matchRecentSubmittedOrder(orders, { orderId, symbol, quantity, side, submittedAt });
     if (!orderMatch) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       continue;
@@ -2038,15 +2120,16 @@ async function pollSubmittedOrderOutcome({ orderId, symbol, maxAttempts = 6, del
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
-  return { status: "WORKING", order: null };
+  return { status: orderId ? "WORKING" : "SUBMITTED", order: null };
 }
 
 function summarizeOrderOutcome(outcome) {
-  const status = String(outcome?.status || "WORKING").toUpperCase();
+  const status = String(outcome?.status || "SUBMITTED").toUpperCase();
   if (status === "FILLED") return "Filled now.";
   if (status === "REJECTED") return "Rejected by Schwab.";
   if (status === "CANCELED") return "Canceled.";
   if (status === "EXPIRED") return "Expired.";
+  if (status === "SUBMITTED") return "Submitted to Schwab. Waiting for confirmed status.";
   return "Working at Schwab.";
 }
 
@@ -2086,6 +2169,7 @@ async function submitShoppingCartOrders() {
       const finalDuration = String(plan?.duration || "DAY").toUpperCase();
       const finalLimit = plan?.limitPrice ?? "";
       const finalStop = plan?.stopPrice ?? "";
+      const orderQuantity = Math.max(1, Math.floor(Number(item.quantity || 0)));
       if (finalSide === "BUY" && !isUsMarketOpenNow()) {
         results.push({
           id: item.id,
@@ -2098,12 +2182,13 @@ async function submitShoppingCartOrders() {
       const order = buildEquityOrder({
         side: finalSide,
         symbol: String(item.symbol || "").toUpperCase(),
-        quantity: Number(item.quantity || 0),
+        quantity: orderQuantity,
         orderType: finalType,
         duration: finalDuration,
         limitPrice: finalLimit,
         stopPrice: finalStop,
       });
+      const submittedAt = Date.now();
       const submit = await schwabApi("/api/schwab/orders", {
         method: "POST",
         body: JSON.stringify({ order }),
@@ -2111,13 +2196,22 @@ async function submitShoppingCartOrders() {
       const outcome = await pollSubmittedOrderOutcome({
         orderId: submit?.orderId || null,
         symbol: String(item.symbol || "").toUpperCase(),
-      }).catch(() => ({ status: "WORKING", order: null }));
+        quantity: orderQuantity,
+        side: finalSide,
+        submittedAt,
+      }).catch(() => ({ status: submit?.orderId ? "WORKING" : "SUBMITTED", order: null }));
+      const outcomeStatus = String(outcome?.status || (submit?.orderId ? "WORKING" : "SUBMITTED")).toUpperCase();
+      const outcomeDetail = extractPolledOrderMessage(outcome?.order);
+      const outcomeSummary = summarizeOrderOutcome(outcome);
+      const isTerminalFailure = new Set(["REJECTED", "CANCELED", "EXPIRED"]).has(outcomeStatus);
       results.push({
         id: item.id,
         symbol: item.symbol || "-",
-        ok: true,
-        message: `${finalSide} ${item.quantity} ${item.symbol} submitted. ${summarizeOrderOutcome(outcome)}`,
-        outcomeStatus: outcome?.status || "WORKING",
+        ok: !isTerminalFailure,
+        message: `${finalSide} ${orderQuantity} ${item.symbol} submitted. ${outcomeSummary}${
+          outcomeDetail ? ` ${outcomeDetail}` : ""
+        }`,
+        outcomeStatus,
       });
     } catch (error) {
       results.push({ id: item.id, symbol: item.symbol || "-", ok: false, message: error.message || "Order failed" });
