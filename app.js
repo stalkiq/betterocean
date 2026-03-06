@@ -1947,15 +1947,10 @@ function buildEquityOrder({ side, symbol, quantity, orderType = "MARKET", durati
     session: "NORMAL",
     duration: String(duration || "DAY").toUpperCase() === "GTC" ? "GOOD_TILL_CANCEL" : "DAY",
     orderType: cleanType,
-    complexOrderStrategyType: "NONE",
-    quantity: cleanQuantity,
     orderStrategyType: "SINGLE",
     orderLegCollection: [
       {
-        orderLegType: "EQUITY",
-        legId: 1,
         instruction: cleanSide,
-        positionEffect: cleanSide === "SELL" ? "CLOSING" : "OPENING",
         quantity: cleanQuantity,
         instrument: {
           symbol,
@@ -2137,6 +2132,13 @@ async function submitShoppingCartOrders() {
   if (!schwabSession.connected) throw new Error("Connect Schwab first.");
   if (!shoppingState.items.length) throw new Error("Your cart is empty.");
 
+  // Refresh session/account snapshot before submit so orders are tied to the active Schwab account hash.
+  await refreshSchwabSession();
+  if (!schwabSession.connected) throw new Error("Schwab session expired. Reconnect and try again.");
+  await loadSchwabContextData().catch(() => ({}));
+  const activeAccountHash = String(schwabSession.accountHash || "").trim();
+  if (!activeAccountHash) throw new Error("No active Schwab account hash. Reconnect and try again.");
+
   shoppingState = {
     ...shoppingState,
     submitting: true,
@@ -2191,7 +2193,7 @@ async function submitShoppingCartOrders() {
       const submittedAt = Date.now();
       const submit = await schwabApi("/api/schwab/orders", {
         method: "POST",
-        body: JSON.stringify({ order }),
+        body: JSON.stringify({ accountHash: activeAccountHash, order }),
       });
       const outcome = await pollSubmittedOrderOutcome({
         orderId: submit?.orderId || null,
@@ -2203,6 +2205,12 @@ async function submitShoppingCartOrders() {
       const outcomeStatus = String(outcome?.status || (submit?.orderId ? "WORKING" : "SUBMITTED")).toUpperCase();
       const outcomeDetail = extractPolledOrderMessage(outcome?.order);
       const outcomeSummary = summarizeOrderOutcome(outcome);
+      const refs = [
+        submit?.orderId ? `orderId ${submit.orderId}` : "",
+        submit?.correlationId ? `corr ${submit.correlationId}` : "",
+      ]
+        .filter(Boolean)
+        .join(" | ");
       const isTerminalFailure = new Set(["REJECTED", "CANCELED", "EXPIRED"]).has(outcomeStatus);
       results.push({
         id: item.id,
@@ -2210,7 +2218,7 @@ async function submitShoppingCartOrders() {
         ok: !isTerminalFailure,
         message: `${finalSide} ${orderQuantity} ${item.symbol} submitted. ${outcomeSummary}${
           outcomeDetail ? ` ${outcomeDetail}` : ""
-        }`,
+        }${refs ? ` [${refs}]` : ""}`,
         outcomeStatus,
       });
     } catch (error) {

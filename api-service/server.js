@@ -702,6 +702,13 @@ function extractOrderIdFromHeaders(headers) {
   return match ? match[1] : null;
 }
 
+function extractHeaderValue(headers, key) {
+  if (!headers || !key) return null;
+  const value = headers[String(key).toLowerCase()];
+  if (Array.isArray(value)) return value[0] || null;
+  return value || null;
+}
+
 async function gradientStructuredJson({ completionsUrl, key, model, systemPrompt, userPrompt }) {
   const upstream = await postJson(
     completionsUrl,
@@ -1722,13 +1729,18 @@ app.post(["/schwab/orders", "/api/schwab/orders"], requireSchwabAuth, async (req
       sendJson(res, result.status, {
         ok: true,
         result: result.data,
+        accountHash: String(accountHash),
         orderId: extractOrderIdFromHeaders(result.headers),
+        location: extractHeaderValue(result.headers, "location"),
+        correlationId: extractHeaderValue(result.headers, "schwab-client-correlid"),
       });
       return;
     }
     sendJson(res, result.status, {
       ok: false,
+      accountHash: String(accountHash),
       error: extractSchwabErrorMessage(result.data, result.status),
+      correlationId: extractHeaderValue(result.headers, "schwab-client-correlid"),
       result: result.data,
     });
   } catch (err) {
