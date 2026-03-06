@@ -181,6 +181,8 @@ let shoppingState = {
   executionStyle: "fast-fill",
   aiPlanByItem: {},
   executionByItem: {},
+  lastExecutionResults: [],
+  lastSubmittedAt: 0,
 };
 let marketCountdownTimer = null;
 let marketOpenThemeTimer = null;
@@ -2052,7 +2054,13 @@ async function submitShoppingCartOrders() {
   if (!schwabSession.connected) throw new Error("Connect Schwab first.");
   if (!shoppingState.items.length) throw new Error("Your cart is empty.");
 
-  shoppingState = { ...shoppingState, submitting: true, status: "Submitting orders..." };
+  shoppingState = {
+    ...shoppingState,
+    submitting: true,
+    status: "Submitting cart to Schwab...",
+    lastExecutionResults: [],
+    lastSubmittedAt: Date.now(),
+  };
   renderShoppingView();
 
   const results = [];
@@ -2132,6 +2140,13 @@ async function submitShoppingCartOrders() {
     executionByItem: nextExecutionByItem,
     submitting: false,
     status: `Submitted ${successCount} order(s), ${failCount} failed.${firstFailure ? ` ${firstFailure}` : ""}`,
+    lastExecutionResults: results.map((row) => ({
+      symbol: String(row?.symbol || "-"),
+      ok: Boolean(row?.ok),
+      message: String(row?.message || ""),
+      status: String(row?.outcomeStatus || (row?.ok ? "SUBMITTED" : "FAILED")).toUpperCase(),
+    })),
+    lastSubmittedAt: Date.now(),
   };
   appendChatMessage("assistant", shoppingState.status, failCount ? "msg-muted" : "msg-success");
   if (successCount > 0) {
@@ -2716,6 +2731,17 @@ function renderShoppingView() {
   const sellChoices = holdings;
   const pinnedHoldings = holdings.slice(0, 8);
   const watchSymbols = getShoppingWatchSymbols();
+  const lastSubmittedLabel = shoppingState.lastSubmittedAt ? new Date(shoppingState.lastSubmittedAt).toLocaleTimeString() : "";
+  const lastResults = Array.isArray(shoppingState.lastExecutionResults) ? shoppingState.lastExecutionResults : [];
+  const lastResultsHtml = lastResults
+    .slice(0, 12)
+    .map((row) => {
+      const toneClass = row.ok ? "value-up" : "value-down";
+      return `<li><strong>${escapeHtml(row.symbol)}</strong> <span class="${toneClass}">${escapeHtml(row.status)}</span> - ${escapeHtml(
+        row.message
+      )}</li>`;
+    })
+    .join("");
   const pinnedHoldingsHtml = pinnedHoldings
     .map((holding) => {
       const quote = shoppingState.quoteBySymbol?.[holding.symbol];
@@ -2960,6 +2986,19 @@ function renderShoppingView() {
             isConnected && shoppingState.items.length && !shoppingState.submitting ? "" : "disabled"
           }>Submit Cart</button>
         </div>
+        ${
+          shoppingState.submitting
+            ? `<div class="do-loading">Submitting your cart... Waiting for Schwab response.</div>`
+            : ""
+        }
+        ${
+          lastResults.length
+            ? `<section class="schwab-card">
+                <h4>Last Submission Results ${lastSubmittedLabel ? `- ${escapeHtml(lastSubmittedLabel)}` : ""}</h4>
+                <ul class="schwab-list">${lastResultsHtml}</ul>
+              </section>`
+            : ""
+        }
       </section>
     </div>
   `;
