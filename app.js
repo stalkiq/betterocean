@@ -178,6 +178,9 @@ let shoppingState = {
   quoteBySymbol: {},
   quotesUpdatedAt: 0,
   loadingQuotes: false,
+  executionStyle: "fast-fill",
+  aiPlanByItem: {},
+  executionByItem: {},
 };
 let marketCountdownTimer = null;
 let marketOpenThemeTimer = null;
@@ -768,7 +771,11 @@ function updateShoppingSubmitButtonState() {
   const submitBtn = document.getElementById("cartSubmitBtn");
   if (!submitBtn) return;
   const isConnected = Boolean(schwabSession.connected);
-  const hasBuy = shoppingState.items.some((item) => String(item?.side || "BUY").toUpperCase() === "BUY");
+  const hasBuy = shoppingState.items.some((item) => {
+    const plan = shoppingState.aiPlanByItem?.[item.id];
+    const side = String(plan?.side || item?.side || "BUY").toUpperCase();
+    return side === "BUY";
+  });
   const marketOpen = isUsMarketOpenNow();
   submitBtn.disabled = !isConnected || !shoppingState.items.length || shoppingState.submitting || (hasBuy && !marketOpen);
 }
@@ -791,7 +798,11 @@ function startShoppingMarketClock() {
       : `Opens in ${formatCountdown(countdown)}`;
     nowEl.textContent = `ET now: ${formatEtNowLabel()}`;
     if (gateEl) {
-      const hasBuy = shoppingState.items.some((item) => String(item?.side || "BUY").toUpperCase() === "BUY");
+      const hasBuy = shoppingState.items.some((item) => {
+        const plan = shoppingState.aiPlanByItem?.[item.id];
+        const side = String(plan?.side || item?.side || "BUY").toUpperCase();
+        return side === "BUY";
+      });
       gateEl.textContent =
         !marketOpen && hasBuy
           ? "Buy orders are disabled while the U.S. market is closed."
@@ -837,16 +848,17 @@ function getCartEstimatedBuyCost() {
   let estimated = 0;
   let unresolvedCount = 0;
   for (const item of items) {
-    const side = String(item?.side || "BUY").toUpperCase();
+    const plan = shoppingState.aiPlanByItem?.[item.id];
+    const side = String(plan?.side || item?.side || "BUY").toUpperCase();
     if (side !== "BUY") continue;
     const qty = Math.max(0, Number(item?.quantity || 0));
     if (!Number.isFinite(qty) || qty <= 0) continue;
     const symbol = String(item?.symbol || "").toUpperCase();
     const quote = shoppingState.quoteBySymbol?.[symbol];
     const quotePrice = Number(quote?.close);
-    const limitPrice = Number(item?.limitPrice);
-    const stopPrice = Number(item?.stopPrice);
-    const orderType = String(item?.orderType || "MARKET").toUpperCase();
+    const limitPrice = Number(plan?.limitPrice ?? item?.limitPrice);
+    const stopPrice = Number(plan?.stopPrice ?? item?.stopPrice);
+    const orderType = String(plan?.orderType || item?.orderType || "MARKET").toUpperCase();
     let unitPrice = quotePrice;
     if (orderType === "LIMIT" || orderType === "STOP_LIMIT") {
       unitPrice = Number.isFinite(limitPrice) && limitPrice > 0 ? limitPrice : quotePrice;
@@ -1978,35 +1990,62 @@ function validateShoppingItem(item) {
   if (!/^[A-Z][A-Z0-9.\-]{0,9}$/.test(symbol)) return "Use a valid ticker symbol (example: AAPL, SPY, BRK.B).";
   const quantity = Number(item?.quantity || 0);
   if (!Number.isFinite(quantity) || quantity <= 0) return "Quantity must be greater than zero.";
-  const type = String(item?.orderType || "MARKET").toUpperCase();
-  if (type === "LIMIT" || type === "STOP_LIMIT") {
-    const p = Number(item?.limitPrice || 0);
-    if (!Number.isFinite(p) || p <= 0) return "Limit price must be greater than zero.";
-  }
-  if (type === "STOP" || type === "STOP_LIMIT") {
-    const s = Number(item?.stopPrice || 0);
-    if (!Number.isFinite(s) || s <= 0) return "Stop price must be greater than zero.";
-  }
   return "";
 }
 
-async function getAutoOrderOverrides(item) {
-  if (!item?.autoMode) return {};
-  const symbol = String(item.symbol || "")
+async function getAiOrderPlanForItem(item) {
+  const symbol = String(item?.symbol || "")
     .trim()
     .toUpperCase();
-  if (!symbol) return {};
-  try {
-    const report = await loadTickerIntelReport(symbol);
-    const signal = String(report?.signal || "neutral").toLowerCase();
-    const side = signal === "bearish" ? "SELL" : "BUY";
-    return {
-      side,
-      orderType: "MARKET",
-    };
-  } catch {
-    return {};
+  const quantity = Math.max(1, Math.floor(Number(item?.quantity || 1)));
+  const executionStyle = shoppingState.executionStyle === "smart-price" ? "smart-price" : "fast-fill";
+  const sideHint = String(item?.side || "BUY").toUpperCase();
+  const response = await schwabApi("/api/schwab/order-plan", {
+    method: "POST",
+    body: JSON.stringify({
+      symbol,
+      quantity,
+      executionStyle,
+      sideHint,
+    }),
+  });
+  return response?.plan || null;
+}
+
+async function pollSubmittedOrderOutcome({ orderId, symbol, maxAttempts = 6, delayMs = 1200 }) {
+  const safeSymbol = String(symbol || "").toUpperCase();
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const data = await schwabApi("/api/schwab/orders/recent?maxResults=20", { method: "GET" });
+    const orders = Array.isArray(data?.orders) ? data.orders : [];
+    const orderMatch =
+      (orderId && orders.find((o) => String(o?.orderId || "") === String(orderId))) ||
+      orders.find((o) =>
+        Array.isArray(o?.orderLegCollection) &&
+        o.orderLegCollection.some((leg) => String(leg?.instrument?.symbol || "").toUpperCase() === safeSymbol)
+      );
+    if (!orderMatch) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      continue;
+    }
+    const status = String(orderMatch?.status || "UNKNOWN").toUpperCase();
+    const terminalStates = new Set(["FILLED", "REJECTED", "CANCELED", "EXPIRED"]);
+    if (terminalStates.has(status)) {
+      return { status, order: orderMatch };
+    }
+    if (attempt < maxAttempts - 1) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
   }
+  return { status: "WORKING", order: null };
+}
+
+function summarizeOrderOutcome(outcome) {
+  const status = String(outcome?.status || "WORKING").toUpperCase();
+  if (status === "FILLED") return "Filled now.";
+  if (status === "REJECTED") return "Rejected by Schwab.";
+  if (status === "CANCELED") return "Canceled.";
+  if (status === "EXPIRED") return "Expired.";
+  return "Working at Schwab.";
 }
 
 async function submitShoppingCartOrders() {
@@ -2020,15 +2059,28 @@ async function submitShoppingCartOrders() {
   for (const item of shoppingState.items) {
     const validationError = validateShoppingItem(item);
     if (validationError) {
-      results.push({ symbol: item.symbol || "-", ok: false, message: validationError });
+      results.push({ id: item.id, symbol: item.symbol || "-", ok: false, message: validationError });
       continue;
     }
     try {
-      const auto = await getAutoOrderOverrides(item);
-      const finalSide = String(auto.side || item.side || "BUY").toUpperCase();
-      const finalType = String(auto.orderType || item.orderType || "MARKET").toUpperCase();
+      const plan = await getAiOrderPlanForItem(item);
+      if (plan) {
+        shoppingState = {
+          ...shoppingState,
+          aiPlanByItem: {
+            ...(shoppingState.aiPlanByItem || {}),
+            [item.id]: plan,
+          },
+        };
+      }
+      const finalSide = String(plan?.side || item.side || "BUY").toUpperCase();
+      const finalType = String(plan?.orderType || "MARKET").toUpperCase();
+      const finalDuration = String(plan?.duration || "DAY").toUpperCase();
+      const finalLimit = plan?.limitPrice ?? "";
+      const finalStop = plan?.stopPrice ?? "";
       if (finalSide === "BUY" && !isUsMarketOpenNow()) {
         results.push({
+          id: item.id,
           symbol: item.symbol || "-",
           ok: false,
           message: "Buy blocked: U.S. market is closed.",
@@ -2040,19 +2092,24 @@ async function submitShoppingCartOrders() {
         symbol: String(item.symbol || "").toUpperCase(),
         quantity: Number(item.quantity || 0),
         orderType: finalType,
-        duration: item.duration || "DAY",
-        limitPrice: item.limitPrice,
-        stopPrice: item.stopPrice,
+        duration: finalDuration,
+        limitPrice: finalLimit,
+        stopPrice: finalStop,
       });
-      await schwabApi("/api/schwab/orders", {
+      const submit = await schwabApi("/api/schwab/orders", {
         method: "POST",
         body: JSON.stringify({ order }),
       });
+      const outcome = await pollSubmittedOrderOutcome({
+        orderId: submit?.orderId || null,
+        symbol: String(item.symbol || "").toUpperCase(),
+      }).catch(() => ({ status: "WORKING", order: null }));
       results.push({
         id: item.id,
         symbol: item.symbol || "-",
         ok: true,
-        message: `${finalSide} ${item.quantity} ${item.symbol} submitted`,
+        message: `${finalSide} ${item.quantity} ${item.symbol} submitted. ${summarizeOrderOutcome(outcome)}`,
+        outcomeStatus: outcome?.status || "WORKING",
       });
     } catch (error) {
       results.push({ id: item.id, symbol: item.symbol || "-", ok: false, message: error.message || "Order failed" });
@@ -2064,9 +2121,15 @@ async function submitShoppingCartOrders() {
   const firstFailure = results.find((r) => !r.ok)?.message || "";
   const submittedIds = new Set(results.filter((r) => r.ok && r.id).map((r) => String(r.id)));
   const nextItems = shoppingState.items.filter((item) => !submittedIds.has(String(item.id)));
+  const nextExecutionByItem = { ...(shoppingState.executionByItem || {}) };
+  for (const result of results) {
+    if (!result?.id) continue;
+    nextExecutionByItem[result.id] = result.message;
+  }
   shoppingState = {
     ...shoppingState,
     items: nextItems,
+    executionByItem: nextExecutionByItem,
     submitting: false,
     status: `Submitted ${successCount} order(s), ${failCount} failed.${firstFailure ? ` ${firstFailure}` : ""}`,
   };
@@ -2642,7 +2705,11 @@ function renderSchwabConnectView() {
 function renderShoppingView() {
   const isConnected = Boolean(schwabSession.connected);
   const marketOpen = isUsMarketOpenNow();
-  const hasBuyOrders = shoppingState.items.some((item) => String(item?.side || "BUY").toUpperCase() === "BUY");
+  const hasBuyOrders = shoppingState.items.some((item) => {
+    const plan = shoppingState.aiPlanByItem?.[item.id];
+    const side = String(plan?.side || item?.side || "BUY").toUpperCase();
+    return side === "BUY";
+  });
   const funding = getShoppingFundingSnapshot();
   const hasFundingData = isConnected && funding.accountCount > 0;
   const holdings = getShoppingHoldings(10);
@@ -2695,47 +2762,52 @@ function renderShoppingView() {
 
   const rowsHtml = shoppingState.items
     .map((item) => {
-      const needsLimit = item.orderType === "LIMIT" || item.orderType === "STOP_LIMIT";
-      const needsStop = item.orderType === "STOP" || item.orderType === "STOP_LIMIT";
       const symbol = String(item.symbol || "").toUpperCase();
       const quote = shoppingState.quoteBySymbol?.[symbol];
+      const plan = shoppingState.aiPlanByItem?.[item.id] || null;
+      const planSide = String(plan?.side || item.side || "BUY").toUpperCase();
+      const planType = String(plan?.orderType || "MARKET").toUpperCase();
+      const planDuration = String(plan?.duration || "DAY").toUpperCase();
+      const planLimit = plan?.limitPrice ?? "";
+      const planStop = plan?.stopPrice ?? "";
       const pct = quote ? getOpenDeltaPercent(quote) : null;
       const rowTone = !Number.isFinite(pct) ? "tone-flat" : pct > 0 ? "tone-up" : pct < 0 ? "tone-down" : "tone-flat";
-      const buyBlocked = !marketOpen && String(item.side || "BUY").toUpperCase() === "BUY";
+      const buyBlocked = !marketOpen && planSide === "BUY";
+      const executionNote = shoppingState.executionByItem?.[item.id] || "";
       return `
       <tr data-cart-row="${item.id}" class="${rowTone}">
         <td><input class="trade-input cart-input-symbol" data-cart-symbol value="${escapeHtml(item.symbol)}" placeholder="AAPL" /></td>
         <td>
-          <select class="trade-input" data-cart-side>
-            <option value="BUY" ${item.side === "BUY" ? "selected" : ""}>Buy</option>
-            <option value="SELL" ${item.side === "SELL" ? "selected" : ""}>Sell</option>
+          <select class="trade-input" data-cart-side disabled>
+            <option value="BUY" ${planSide === "BUY" ? "selected" : ""}>Buy</option>
+            <option value="SELL" ${planSide === "SELL" ? "selected" : ""}>Sell</option>
           </select>
         </td>
         <td><input class="trade-input" data-cart-qty type="number" min="1" step="1" value="${Number(item.quantity) || 1}" /></td>
         <td>
-          <select class="trade-input" data-cart-order-type>
-            <option value="MARKET" ${item.orderType === "MARKET" ? "selected" : ""}>Market</option>
-            <option value="LIMIT" ${item.orderType === "LIMIT" ? "selected" : ""}>Limit</option>
-            <option value="STOP" ${item.orderType === "STOP" ? "selected" : ""}>Stop</option>
-            <option value="STOP_LIMIT" ${item.orderType === "STOP_LIMIT" ? "selected" : ""}>Stop Limit</option>
+          <select class="trade-input" data-cart-order-type disabled>
+            <option value="MARKET" ${planType === "MARKET" ? "selected" : ""}>Market</option>
+            <option value="LIMIT" ${planType === "LIMIT" ? "selected" : ""}>Limit</option>
+            <option value="STOP" ${planType === "STOP" ? "selected" : ""}>Stop</option>
+            <option value="STOP_LIMIT" ${planType === "STOP_LIMIT" ? "selected" : ""}>Stop Limit</option>
           </select>
         </td>
-        <td><input class="trade-input" data-cart-limit type="number" min="0.01" step="0.01" value="${escapeHtml(item.limitPrice || "")}" ${needsLimit ? "" : "disabled"} /></td>
-        <td><input class="trade-input" data-cart-stop type="number" min="0.01" step="0.01" value="${escapeHtml(item.stopPrice || "")}" ${needsStop ? "" : "disabled"} /></td>
+        <td><input class="trade-input" data-cart-limit type="number" min="0.01" step="0.01" value="${escapeHtml(planLimit)}" disabled /></td>
+        <td><input class="trade-input" data-cart-stop type="number" min="0.01" step="0.01" value="${escapeHtml(planStop)}" disabled /></td>
         <td>
-          <select class="trade-input" data-cart-duration>
-            <option value="DAY" ${item.duration === "DAY" ? "selected" : ""}>Day</option>
-            <option value="GTC" ${item.duration === "GTC" ? "selected" : ""}>GTC</option>
+          <select class="trade-input" data-cart-duration disabled>
+            <option value="DAY" ${planDuration === "DAY" ? "selected" : ""}>Day</option>
+            <option value="GTC" ${planDuration === "GTC" ? "selected" : ""}>GTC</option>
           </select>
         </td>
-        <td><label class="cart-auto-label"><input type="checkbox" data-cart-auto ${item.autoMode ? "checked" : ""} /> Auto</label></td>
+        <td><label class="cart-auto-label"><input type="checkbox" data-cart-auto checked disabled /> AI</label></td>
         <td><button type="button" class="schwab-btn schwab-btn-ghost cart-remove-btn" data-cart-remove>Remove</button></td>
         <td class="cart-row-price">${quote ? renderPriceCell(quote.close) : "-"}</td>
         <td class="cart-row-move ${!Number.isFinite(pct) ? "value-flat" : pct > 0 ? "value-up" : pct < 0 ? "value-down" : "value-flat"}">${formatPercent(
           pct
         )}</td>
         <td>${quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">No Data</span>'}</td>
-        <td class="cart-row-note">${buyBlocked ? "Buy waits for market open" : "Ready"}</td>
+        <td class="cart-row-note">${executionNote || (buyBlocked ? "Buy waits for market open" : "AI plan runs at submit")}</td>
       </tr>
     `;
     })
@@ -2745,7 +2817,7 @@ function renderShoppingView() {
     <div class="agent-view">
       <section class="agent-hero">
         <h3>Shopping Cart</h3>
-        <p>Build buy and sell orders, then submit straight to Schwab. Auto mode uses Gradient ticker intelligence to bias side/type before submit.</p>
+        <p>Add ticker + quantity, then submit. Gradient AI auto-sets side, order type, limit/stop, and TIF before sending to Schwab.</p>
       </section>
       <section class="shopping-market-card">
         <div class="shopping-market-left">
@@ -2797,6 +2869,17 @@ function renderShoppingView() {
               : ""
           }">${hasFundingData ? formatMoney(funding.remainingAfterCart) : "-"}</div>
         </article>
+      </section>
+      <section class="schwab-card">
+        <div class="sort-mode-row">
+          <button type="button" class="sort-mode-btn ${shoppingState.executionStyle === "fast-fill" ? "active" : ""}" data-execution-style="fast-fill">Fast Fill</button>
+          <button type="button" class="sort-mode-btn ${shoppingState.executionStyle === "smart-price" ? "active" : ""}" data-execution-style="smart-price">Smart Price</button>
+        </div>
+        <p class="schwab-card-sub">
+          ${shoppingState.executionStyle === "fast-fill"
+            ? "Fast Fill: AI prioritizes execution speed."
+            : "Smart Price: AI prioritizes price quality with likely fill."}
+        </p>
       </section>
       ${
         hasFundingData && funding.cartOverage > 0
@@ -2859,7 +2942,7 @@ function renderShoppingView() {
                 <th>Stop</th>
                 <th>TIF</th>
                 <th>Auto</th>
-                <th>Action</th>
+                <th>Remove</th>
                 <th>Last</th>
                 <th>Move %</th>
                 <th>Signal</th>
@@ -2886,13 +2969,31 @@ function renderShoppingView() {
   const clearBtn = document.getElementById("cartClearBtn");
   const refreshQuotesBtn = document.getElementById("cartRefreshQuotesBtn");
   const submitBtn = document.getElementById("cartSubmitBtn");
+  const executionStyleButtons = workspaceTableWrap.querySelectorAll("[data-execution-style]");
+  executionStyleButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const nextStyle = btn.getAttribute("data-execution-style") === "smart-price" ? "smart-price" : "fast-fill";
+      shoppingState = {
+        ...shoppingState,
+        executionStyle: nextStyle,
+        status: "",
+        aiPlanByItem: {},
+      };
+      renderShoppingView();
+    });
+  });
   if (addBtn && newSymbolInput) {
     addBtn.addEventListener("click", () => {
       const symbol = String(newSymbolInput.value || "")
         .trim()
         .toUpperCase();
       if (!symbol) return;
-      shoppingState = { ...shoppingState, items: [...shoppingState.items, createShoppingCartItem(symbol)], status: "" };
+      shoppingState = {
+        ...shoppingState,
+        items: [...shoppingState.items, createShoppingCartItem(symbol)],
+        status: "",
+        aiPlanByItem: {},
+      };
       renderShoppingView();
     });
     newSymbolInput.addEventListener("keydown", (event) => {
@@ -2909,7 +3010,7 @@ function renderShoppingView() {
   }
   if (clearBtn) {
     clearBtn.addEventListener("click", () => {
-      shoppingState = { ...shoppingState, items: [], status: "Cart cleared." };
+      shoppingState = { ...shoppingState, items: [], status: "Cart cleared.", aiPlanByItem: {}, executionByItem: {} };
       renderShoppingView();
     });
   }
@@ -2927,32 +3028,37 @@ function renderShoppingView() {
     const id = rowEl.getAttribute("data-cart-row");
     if (!id) return;
     const updateItem = (patch) => {
+      const nextPlan = { ...(shoppingState.aiPlanByItem || {}) };
+      const nextExecution = { ...(shoppingState.executionByItem || {}) };
+      delete nextPlan[id];
+      delete nextExecution[id];
       shoppingState = {
         ...shoppingState,
         items: shoppingState.items.map((item) => (item.id === id ? { ...item, ...patch } : item)),
         status: "",
+        aiPlanByItem: nextPlan,
+        executionByItem: nextExecution,
       };
       renderShoppingView();
     };
     rowEl.querySelector("[data-cart-symbol]")?.addEventListener("change", (e) => {
       updateItem({ symbol: String(e.target.value || "").trim().toUpperCase() });
     });
-    rowEl.querySelector("[data-cart-side]")?.addEventListener("change", (e) => updateItem({ side: e.target.value || "BUY" }));
     rowEl.querySelector("[data-cart-qty]")?.addEventListener("change", (e) =>
       updateItem({ quantity: Number(e.target.value || 0) })
     );
-    rowEl.querySelector("[data-cart-order-type]")?.addEventListener("change", (e) => {
-      const nextType = String(e.target.value || "MARKET").toUpperCase();
-      updateItem({ orderType: nextType });
-    });
-    rowEl.querySelector("[data-cart-limit]")?.addEventListener("change", (e) => updateItem({ limitPrice: e.target.value || "" }));
-    rowEl.querySelector("[data-cart-stop]")?.addEventListener("change", (e) => updateItem({ stopPrice: e.target.value || "" }));
-    rowEl.querySelector("[data-cart-duration]")?.addEventListener("change", (e) =>
-      updateItem({ duration: String(e.target.value || "DAY").toUpperCase() })
-    );
-    rowEl.querySelector("[data-cart-auto]")?.addEventListener("change", (e) => updateItem({ autoMode: Boolean(e.target.checked) }));
     rowEl.querySelector("[data-cart-remove]")?.addEventListener("click", () => {
-      shoppingState = { ...shoppingState, items: shoppingState.items.filter((item) => item.id !== id), status: "" };
+      const nextPlan = { ...(shoppingState.aiPlanByItem || {}) };
+      const nextExecution = { ...(shoppingState.executionByItem || {}) };
+      delete nextPlan[id];
+      delete nextExecution[id];
+      shoppingState = {
+        ...shoppingState,
+        items: shoppingState.items.filter((item) => item.id !== id),
+        status: "",
+        aiPlanByItem: nextPlan,
+        executionByItem: nextExecution,
+      };
       renderShoppingView();
     });
   });
@@ -2962,7 +3068,12 @@ function renderShoppingView() {
     btn.addEventListener("click", () => {
       const symbol = String(btn.getAttribute("data-cart-add-symbol") || "").toUpperCase();
       if (!symbol) return;
-      shoppingState = { ...shoppingState, items: [...shoppingState.items, createShoppingCartItem(symbol)], status: "" };
+      shoppingState = {
+        ...shoppingState,
+        items: [...shoppingState.items, createShoppingCartItem(symbol)],
+        status: "",
+        aiPlanByItem: {},
+      };
       renderShoppingView();
     });
   });
@@ -2984,6 +3095,7 @@ function renderShoppingView() {
           },
         ],
         status: "",
+        aiPlanByItem: {},
       };
       renderShoppingView();
     });

@@ -595,6 +595,113 @@ function sanitizeActionBias(value, fallback = "balanced") {
   return ["lean-bullish", "lean-bearish", "balanced"].includes(clean) ? clean : fallback;
 }
 
+function sanitizeExecutionSide(value, fallback = "BUY") {
+  const clean = String(value || "").toUpperCase();
+  return clean === "SELL" ? "SELL" : fallback;
+}
+
+function sanitizeExecutionOrderType(value, fallback = "MARKET") {
+  const clean = String(value || "").toUpperCase();
+  return ["MARKET", "LIMIT", "STOP", "STOP_LIMIT"].includes(clean) ? clean : fallback;
+}
+
+function sanitizeExecutionDuration(value, fallback = "DAY") {
+  const clean = String(value || "").toUpperCase();
+  return ["DAY", "GTC"].includes(clean) ? clean : fallback;
+}
+
+function toNumberOrNull(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function readSchwabQuote(payload, symbol) {
+  const safeSymbol = String(symbol || "").toUpperCase();
+  if (!safeSymbol || !payload || typeof payload !== "object") return null;
+  const entry = payload[safeSymbol] || payload[safeSymbol.toLowerCase()] || null;
+  const quote = entry?.quote && typeof entry.quote === "object" ? entry.quote : entry;
+  if (!quote || typeof quote !== "object") return null;
+  const last = toNumberOrNull(quote.lastPrice ?? quote.mark ?? quote.closePrice ?? quote.netChange);
+  const bid = toNumberOrNull(quote.bidPrice);
+  const ask = toNumberOrNull(quote.askPrice);
+  const open = toNumberOrNull(quote.openPrice);
+  const high = toNumberOrNull(quote.highPrice);
+  const low = toNumberOrNull(quote.lowPrice);
+  return {
+    symbol: safeSymbol,
+    last,
+    bid,
+    ask,
+    open,
+    high,
+    low,
+    raw: quote,
+  };
+}
+
+function buildFallbackOrderPlan({ symbol, quantity, executionStyle, sideHint, quote }) {
+  const style = String(executionStyle || "fast-fill").toLowerCase() === "smart-price" ? "smart-price" : "fast-fill";
+  const side = sanitizeExecutionSide(sideHint, "BUY");
+  const duration = "DAY";
+  const last = toNumberOrNull(quote?.last);
+  const bid = toNumberOrNull(quote?.bid);
+  const ask = toNumberOrNull(quote?.ask);
+  const reference = ask || bid || last;
+  if (!reference) {
+    return {
+      symbol,
+      quantity,
+      side,
+      orderType: "MARKET",
+      duration,
+      limitPrice: null,
+      stopPrice: null,
+      source: "fallback",
+      rationale: "Quote data was limited, so a market order was selected for valid submission.",
+    };
+  }
+
+  if (style === "fast-fill") {
+    return {
+      symbol,
+      quantity,
+      side,
+      orderType: "MARKET",
+      duration,
+      limitPrice: null,
+      stopPrice: null,
+      source: "fallback",
+      rationale: "Fast-fill mode uses market orders to maximize immediate execution probability.",
+    };
+  }
+
+  // Smart-price fallback: use a near-touch limit to improve price control while keeping high fill odds.
+  const base = side === "BUY" ? ask || reference : bid || reference;
+  const offset = base * 0.0015;
+  const limitPriceRaw = side === "BUY" ? base + offset : Math.max(0.01, base - offset);
+  const limitPrice = Number(limitPriceRaw.toFixed(2));
+  return {
+    symbol,
+    quantity,
+    side,
+    orderType: "LIMIT",
+    duration,
+    limitPrice,
+    stopPrice: null,
+    source: "fallback",
+    rationale: "Smart-price mode chose a near-touch limit to balance price quality with likely execution.",
+  };
+}
+
+function extractOrderIdFromHeaders(headers) {
+  const locationRaw = headers?.location;
+  const location = Array.isArray(locationRaw) ? locationRaw[0] : locationRaw;
+  const text = String(location || "");
+  if (!text) return null;
+  const match = text.match(/\/orders\/(\d+)(?:\b|$)/i);
+  return match ? match[1] : null;
+}
+
 async function gradientStructuredJson({ completionsUrl, key, model, systemPrompt, userPrompt }) {
   const upstream = await postJson(
     completionsUrl,
@@ -1436,6 +1543,140 @@ app.get(["/schwab/quotes", "/api/schwab/quotes"], requireSchwabAuth, async (req,
   }
 });
 
+app.post(["/schwab/order-plan", "/api/schwab/order-plan"], requireSchwabAuth, async (req, res) => {
+  const symbol = normalizeTickerSymbol(req.body?.symbol || "");
+  const quantity = Math.max(1, Math.floor(Number(req.body?.quantity || 1)));
+  const executionStyle = String(req.body?.executionStyle || "fast-fill").toLowerCase() === "smart-price" ? "smart-price" : "fast-fill";
+  const sideHint = sanitizeExecutionSide(req.body?.sideHint || "BUY", "BUY");
+  if (!symbol) {
+    sendJson(res, 400, { error: "A valid symbol is required." });
+    return;
+  }
+
+  try {
+    const quoteResult = await schwabRequestWithSession(req.session, "GET", "/marketdata/quotes", {
+      symbols: symbol,
+      fields: "quote",
+    });
+    const quote = readSchwabQuote(quoteResult.data, symbol);
+    const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
+    const key = process.env.GRADIENT_AGENT_KEY;
+    if (!endpoint || !key || !quote) {
+      sendJson(res, 200, {
+        ok: true,
+        plan: buildFallbackOrderPlan({ symbol, quantity, executionStyle, sideHint, quote }),
+      });
+      return;
+    }
+
+    const base = endpoint.replace(/\/+$/, "");
+    const completionsUrl = base.includes("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const model = process.env.GRADIENT_MODEL || "openai-gpt-oss-120b";
+    const aiRaw = await gradientStructuredJson({
+      completionsUrl,
+      key,
+      model,
+      systemPrompt:
+        "You are an execution planning assistant for a brokerage order router. Return strict JSON only with conservative order fields that maximize valid submission and practical fill odds.",
+      userPrompt: `
+Return STRICT JSON:
+{
+  "side": "BUY|SELL",
+  "orderType": "MARKET|LIMIT|STOP|STOP_LIMIT",
+  "duration": "DAY|GTC",
+  "limitPrice": number|null,
+  "stopPrice": number|null,
+  "rationale": "1 sentence plain English"
+}
+
+Inputs:
+- Symbol: ${symbol}
+- Quantity: ${quantity}
+- Execution style: ${executionStyle}
+- Side hint: ${sideHint}
+- Quote JSON: ${JSON.stringify(quote, null, 2)}
+
+Rules:
+- fast-fill style should strongly prefer MARKET DAY.
+- smart-price style should prefer LIMIT near touch (ask for BUY, bid for SELL).
+- If orderType does not need a field, set it to null.
+- Keep rationale concise.
+- No markdown. No extra keys.
+`,
+    });
+
+    const side = sanitizeExecutionSide(aiRaw?.side, sideHint);
+    const orderType = sanitizeExecutionOrderType(
+      aiRaw?.orderType,
+      executionStyle === "smart-price" ? "LIMIT" : "MARKET"
+    );
+    const duration = sanitizeExecutionDuration(aiRaw?.duration, "DAY");
+    let limitPrice = toNumberOrNull(aiRaw?.limitPrice);
+    let stopPrice = toNumberOrNull(aiRaw?.stopPrice);
+    if (!(orderType === "LIMIT" || orderType === "STOP_LIMIT")) limitPrice = null;
+    if (!(orderType === "STOP" || orderType === "STOP_LIMIT")) stopPrice = null;
+
+    const plan = {
+      symbol,
+      quantity,
+      side,
+      orderType,
+      duration,
+      limitPrice,
+      stopPrice,
+      source: "gradient",
+      rationale: String(aiRaw?.rationale || "").trim() || "AI generated execution settings.",
+    };
+    sendJson(res, 200, { ok: true, plan });
+  } catch {
+    try {
+      const quoteResult = await schwabRequestWithSession(req.session, "GET", "/marketdata/quotes", {
+        symbols: symbol,
+        fields: "quote",
+      });
+      const quote = readSchwabQuote(quoteResult.data, symbol);
+      sendJson(res, 200, {
+        ok: true,
+        plan: buildFallbackOrderPlan({ symbol, quantity, executionStyle, sideHint, quote }),
+      });
+    } catch (err) {
+      sendJson(res, err.status || 502, { error: err.message || "Failed to build order plan." });
+    }
+  }
+});
+
+app.get(["/schwab/orders/recent", "/api/schwab/orders/recent"], requireSchwabAuth, async (req, res) => {
+  const accountHash = req.query.accountHash || req.session.primaryAccountHash;
+  if (!accountHash) {
+    sendJson(res, 400, { error: "No account hash available for orders." });
+    return;
+  }
+  const maxResults = Math.max(1, Math.min(50, Number(req.query.maxResults || 25)));
+  const now = new Date();
+  const from = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+  const to = now.toISOString();
+  try {
+    const result = await schwabRequestWithSession(
+      req.session,
+      "GET",
+      `/accounts/${encodeURIComponent(String(accountHash))}/orders`,
+      {
+        fromEnteredTime: from,
+        toEnteredTime: to,
+        maxResults,
+      }
+    );
+    const list = Array.isArray(result.data) ? result.data : result.data?.orders || [];
+    const sorted = list
+      .slice()
+      .sort((a, b) => Date.parse(b?.enteredTime || 0) - Date.parse(a?.enteredTime || 0))
+      .slice(0, maxResults);
+    sendJson(res, result.status, { accountHash, orders: sorted, rawCount: list.length });
+  } catch (err) {
+    sendJson(res, err.status || 502, { error: err.message || "Failed to fetch recent orders." });
+  }
+});
+
 app.post(["/schwab/orders", "/api/schwab/orders"], requireSchwabAuth, async (req, res) => {
   const accountHash = req.body?.accountHash || req.session.primaryAccountHash;
   const order = req.body?.order;
@@ -1478,7 +1719,11 @@ app.post(["/schwab/orders", "/api/schwab/orders"], requireSchwabAuth, async (req
     if (result.status >= 200 && result.status < 300) {
       clearSessionCacheByPrefix(req.session, "orders-open:");
       clearSessionCacheByPrefix(req.session, "accounts:");
-      sendJson(res, result.status, { ok: true, result: result.data });
+      sendJson(res, result.status, {
+        ok: true,
+        result: result.data,
+        orderId: extractOrderIdFromHeaders(result.headers),
+      });
       return;
     }
     sendJson(res, result.status, {
