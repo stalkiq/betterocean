@@ -975,6 +975,101 @@ function extractMaxQuantityFromOrder(order) {
   return maxQty;
 }
 
+function toPositiveNumber(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function toPositiveInteger(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.max(1, Math.floor(parsed));
+}
+
+function normalizeSchwabSession(value) {
+  const clean = String(value || "").toUpperCase();
+  const allowed = new Set(["NORMAL", "AM", "PM", "SEAMLESS"]);
+  return allowed.has(clean) ? clean : "NORMAL";
+}
+
+function normalizeSchwabDuration(value) {
+  const clean = String(value || "").toUpperCase();
+  if (clean === "GOOD_TILL_CANCEL" || clean === "GTC") return "GOOD_TILL_CANCEL";
+  return "DAY";
+}
+
+function normalizeSchwabOrderType(value) {
+  const clean = String(value || "").toUpperCase();
+  const allowed = new Set(["MARKET", "LIMIT", "STOP", "STOP_LIMIT"]);
+  return allowed.has(clean) ? clean : "MARKET";
+}
+
+function normalizeSchwabInstruction(value) {
+  const clean = String(value || "").toUpperCase();
+  const allowed = new Set(["BUY", "SELL", "SELL_SHORT", "BUY_TO_COVER"]);
+  return allowed.has(clean) ? clean : "BUY";
+}
+
+function compileOrderForSchwab(rawOrder) {
+  if (!rawOrder || typeof rawOrder !== "object") {
+    const err = new Error("order object is required.");
+    err.status = 400;
+    throw err;
+  }
+
+  const leg = Array.isArray(rawOrder.orderLegCollection) ? rawOrder.orderLegCollection[0] || {} : {};
+  const symbol = normalizeTickerSymbol(leg?.instrument?.symbol || rawOrder?.symbol || "");
+  if (!symbol) {
+    const err = new Error("Order symbol is required.");
+    err.status = 400;
+    throw err;
+  }
+
+  const quantity = toPositiveInteger(leg?.quantity ?? rawOrder.quantity);
+  if (!quantity) {
+    const err = new Error("Order quantity must be greater than zero.");
+    err.status = 400;
+    throw err;
+  }
+
+  const orderType = normalizeSchwabOrderType(rawOrder.orderType);
+  const price = toPositiveNumber(rawOrder.price);
+  const stopPrice = toPositiveNumber(rawOrder.stopPrice);
+  if ((orderType === "LIMIT" || orderType === "STOP_LIMIT") && !price) {
+    const err = new Error("Limit/Stop-Limit orders require a valid price.");
+    err.status = 400;
+    throw err;
+  }
+  if ((orderType === "STOP" || orderType === "STOP_LIMIT") && !stopPrice) {
+    const err = new Error("Stop/Stop-Limit orders require a valid stopPrice.");
+    err.status = 400;
+    throw err;
+  }
+
+  const compiled = {
+    session: normalizeSchwabSession(rawOrder.session),
+    duration: normalizeSchwabDuration(rawOrder.duration),
+    orderType,
+    complexOrderStrategyType: "NONE",
+    orderStrategyType: "SINGLE",
+    orderLegCollection: [
+      {
+        instruction: normalizeSchwabInstruction(leg?.instruction),
+        quantity,
+        instrument: {
+          symbol,
+          assetType: "EQUITY",
+        },
+      },
+    ],
+  };
+
+  if (orderType === "LIMIT" || orderType === "STOP_LIMIT") compiled.price = Number(price.toFixed(2));
+  if (orderType === "STOP" || orderType === "STOP_LIMIT") compiled.stopPrice = Number(stopPrice.toFixed(2));
+
+  return compiled;
+}
+
 function extractSchwabErrorMessage(payload, fallbackStatus) {
   if (!payload) return `Schwab request failed (${fallbackStatus || "unknown"})`;
   if (typeof payload === "string") return payload;
@@ -1691,12 +1786,15 @@ app.post(["/schwab/orders", "/api/schwab/orders"], requireSchwabAuth, async (req
     sendJson(res, 400, { error: "accountHash is required." });
     return;
   }
-  if (!order || typeof order !== "object") {
-    sendJson(res, 400, { error: "order object is required." });
+  let compiledOrder;
+  try {
+    compiledOrder = compileOrderForSchwab(order);
+  } catch (err) {
+    sendJson(res, err.status || 400, { error: err.message || "Invalid order payload." });
     return;
   }
 
-  const maxQty = extractMaxQuantityFromOrder(order);
+  const maxQty = extractMaxQuantityFromOrder(compiledOrder);
   if (maxQty > MAX_ORDER_QTY) {
     sendJson(res, 400, {
       error: `Order rejected by guardrail. Quantity ${maxQty} exceeds SCHWAB_MAX_ORDER_QTY (${MAX_ORDER_QTY}).`,
@@ -1721,7 +1819,7 @@ app.post(["/schwab/orders", "/api/schwab/orders"], requireSchwabAuth, async (req
       "POST",
       `/accounts/${encodeURIComponent(String(accountHash))}/orders`,
       null,
-      order
+      compiledOrder
     );
     if (result.status >= 200 && result.status < 300) {
       clearSessionCacheByPrefix(req.session, "orders-open:");

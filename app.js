@@ -1943,84 +1943,31 @@ function buildEquityOrder({ side, symbol, quantity, orderType = "MARKET", durati
   const cleanType = String(orderType || "MARKET").toUpperCase();
   const cleanSide = String(side || "BUY").toUpperCase();
   const cleanQuantity = Math.max(1, Math.floor(Number(quantity || 0)));
-  const nowIso = new Date().toISOString();
-  const numericLimit = Number(limitPrice);
-  const numericStop = Number(stopPrice);
-  const hasLimit = cleanType === "LIMIT" || cleanType === "STOP_LIMIT";
-  const hasStop = cleanType === "STOP" || cleanType === "STOP_LIMIT";
   const order = {
     session: "NORMAL",
     duration: String(duration || "DAY").toUpperCase() === "GTC" ? "GOOD_TILL_CANCEL" : "DAY",
     orderType: cleanType,
-    cancelTime: nowIso,
     complexOrderStrategyType: "NONE",
-    quantity: cleanQuantity,
-    filledQuantity: 0,
-    remainingQuantity: cleanQuantity,
-    destinationLinkName: "AUTO",
-    releaseTime: nowIso,
-    stopPrice: hasStop && Number.isFinite(numericStop) ? numericStop : 0,
-    stopPriceLinkBasis: "MANUAL",
-    stopPriceLinkType: "VALUE",
-    stopPriceOffset: 0,
-    stopType: "STANDARD",
-    priceLinkBasis: "MANUAL",
-    priceLinkType: "VALUE",
-    price: hasLimit && Number.isFinite(numericLimit) ? numericLimit : 0,
-    taxLotMethod: "FIFO",
     orderStrategyType: "SINGLE",
     orderLegCollection: [
       {
-        orderLegType: "EQUITY",
-        legId: 0,
         instruction: cleanSide,
-        positionEffect: cleanSide === "SELL" ? "CLOSING" : "OPENING",
         quantity: cleanQuantity,
-        quantityType: "ALL_SHARES",
-        divCapGains: "REINVEST",
-        toSymbol: "",
         instrument: {
-          cusip: "",
           symbol,
-          description: "",
-          instrumentId: 0,
-          netChange: 0,
-          type: "EQUITY",
           assetType: "EQUITY",
         },
       },
     ],
-    activationPrice: 0,
-    specialInstruction: "ALL_OR_NONE",
-    orderId: 0,
-    cancelable: false,
-    editable: false,
-    status: "AWAITING_PARENT_ORDER",
-    enteredTime: nowIso,
-    closeTime: nowIso,
-    accountNumber: 0,
-    orderActivityCollection: [
-      {
-        activityType: "EXECUTION",
-        executionType: "FILL",
-        quantity: 0,
-        orderRemainingQuantity: cleanQuantity,
-        executionLegs: [
-          {
-            legId: 0,
-            price: 0,
-            quantity: 0,
-            mismarkedQuantity: 0,
-            instrumentId: 0,
-            time: nowIso,
-          },
-        ],
-      },
-    ],
-    replacingOrderCollection: [],
-    childOrderStrategies: [],
-    statusDescription: "",
   };
+  if (cleanType === "LIMIT" || cleanType === "STOP_LIMIT") {
+    const numericLimit = Number(limitPrice);
+    if (Number.isFinite(numericLimit)) order.price = Number(numericLimit.toFixed(2));
+  }
+  if (cleanType === "STOP" || cleanType === "STOP_LIMIT") {
+    const numericStop = Number(stopPrice);
+    if (Number.isFinite(numericStop)) order.stopPrice = Number(numericStop.toFixed(2));
+  }
   return order;
 }
 
