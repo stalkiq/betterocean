@@ -1313,37 +1313,20 @@ function renderTickerIntelView() {
     .map((symbol) => {
       const quote = tickerIntelState.quoteBySymbol[symbol];
       const pct = quote ? getOpenDeltaPercent(quote) : null;
-      const signal = getSignalFromDelta(pct);
       const companyName = getCompanyName(symbol, quote);
-      const rowToneClass =
-        signal.className === "bull-strong" || signal.className === "bull"
-          ? "tone-strong"
-          : signal.className === "bear-strong" || signal.className === "bear"
-            ? "tone-weak"
-            : "tone-mixed";
-      const warningChips = getWarningChipsForTicker(symbol, quote)
-        .map((chip) => `<span class="warning-chip ${chip.className}">${escapeHtml(chip.text)}</span>`)
-        .join("");
-      const trendClass = !Number.isFinite(pct)
-        ? "value-flat"
-        : pct > 0
-          ? "value-up"
-          : pct < 0
-            ? "value-down"
-            : "value-flat";
+      const signal = getSignalFromDelta(pct);
       return `
-      <button type="button" class="ticker-item ${rowToneClass} ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
+      <button type="button" class="ticker-item ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
         <span class="ticker-item-top">
           <span class="ticker-item-symbol">${symbol}</span>
-          ${quote ? renderSignalPill(pct) : '<span class="signal-pill neutral">No Data</span>'}
+          <span>${escapeHtml(signal.text)}</span>
         </span>
         <span class="ticker-item-company">${escapeHtml(companyName)}</span>
         <span class="ticker-item-bottom">
           <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
-          <span class="${trendClass}">${formatPercent(pct)}</span>
+          <span>${formatPercent(pct)}</span>
         </span>
         <span class="ticker-item-context muted">${escapeHtml(getCompanySuccessNote(symbol))}</span>
-        ${warningChips ? `<span class="ticker-warning-row">${warningChips}</span>` : ""}
       </button>
     `;
     })
@@ -1355,16 +1338,27 @@ function renderTickerIntelView() {
   const rightPaneHtml = `
     <div class="schwab-card">
       <h3>Ticker Workspace</h3>
-      <p class="schwab-card-sub">Market Coverage stays on the left. Click a ticker to open a dedicated tab with simple company details.</p>
+      <p class="schwab-card-sub">Market Coverage stays on the left. Click a ticker to update these details.</p>
       <div class="trade-readiness-grid">
         <div><span>Selected ticker</span><strong>${escapeHtml(selected)}</strong></div>
         <div><span>Company</span><strong>${escapeHtml(selectedCompany)}</strong></div>
         <div><span>Price</span><strong>${selectedQuote ? renderPriceCell(selectedQuote.close) : "-"}</strong></div>
-        <div><span>Today</span><strong class="${selectedPct > 0 ? "value-up" : selectedPct < 0 ? "value-down" : "value-flat"}">${formatPercent(
-          selectedPct
-        )}</strong></div>
+        <div><span>Today</span><strong>${formatPercent(selectedPct)}</strong></div>
       </div>
-      <p class="schwab-card-sub">This right side is intentionally minimal so you can decide later what to show here.</p>
+      <section class="schwab-grid">
+        <article class="schwab-card">
+          <h4>What this company does</h4>
+          <p class="schwab-card-sub">${escapeHtml(getCompanySuccessNote(selected))}</p>
+        </article>
+        <article class="schwab-card">
+          <h4>Why investors follow it</h4>
+          <ul class="ticker-bullets">
+            <li>It reports results every quarter and is tracked by financial media.</li>
+            <li>Its products or services affect real customers and business demand.</li>
+            <li>Its size and visibility can move with market sentiment and news.</li>
+          </ul>
+        </article>
+      </section>
     </div>
   `;
 
@@ -1372,11 +1366,6 @@ function renderTickerIntelView() {
     <section class="ticker-intel-layout">
       <aside class="ticker-intel-list">
         <h4>Market Coverage</h4>
-        <div class="coverage-legend">
-          <span class="legend-chip good">Good setup</span>
-          <span class="legend-chip caution">Use caution</span>
-          <span class="legend-chip risk">Higher risk</span>
-        </div>
         <div class="ticker-filters">
           <select id="tickerUniversePreset" class="trade-input">
             <option value="sp500" ${tickerIntelState.universePreset === "sp500" ? "selected" : ""}>S&P 500 Universe</option>
@@ -1484,8 +1473,7 @@ function wireTickerIntelEvents() {
       if (!symbol) return;
       const safeSymbol = String(symbol).toUpperCase();
       tickerIntelState = { ...tickerIntelState, selected: safeSymbol, loading: false, error: "" };
-      openTabs.add(getTickerDetailTabName(safeSymbol));
-      activateTab(getTickerDetailTabName(safeSymbol));
+      renderTickerIntelView();
     });
   });
   workspaceTableWrap.querySelectorAll(".ticker-priority-item").forEach((btn) => {
@@ -1494,8 +1482,7 @@ function wireTickerIntelEvents() {
       if (!symbol) return;
       const safeSymbol = String(symbol).toUpperCase();
       tickerIntelState = { ...tickerIntelState, selected: safeSymbol, loading: false, error: "" };
-      openTabs.add(getTickerDetailTabName(safeSymbol));
-      activateTab(getTickerDetailTabName(safeSymbol));
+      renderTickerIntelView();
     });
   });
 }
@@ -3383,7 +3370,7 @@ function activateTab(tabName) {
       : tabName === INVESTMENTS_TAB
         ? "Public market dashboard"
           : tabName === TICKER_INTEL_TAB
-            ? "Market coverage list + separate ticker tabs"
+            ? "Market coverage list + inline ticker workspace"
         : tabName === TIME_TAB
           ? "Market open countdown + AI playbook"
       : tabName === SHOPPING_TAB
