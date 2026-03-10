@@ -1462,24 +1462,26 @@ function renderTickerIntelView() {
             <option value="high-volatility" ${tickerIntelState.universePreset === "high-volatility" ? "selected" : ""}>High Volatility Focus</option>
             <option value="my-holdings" ${tickerIntelState.universePreset === "my-holdings" ? "selected" : ""}>My Holdings</option>
           </select>
-          <input id="tickerSearchInput" class="trade-input" placeholder="Search symbol (e.g. AAPL)" value="${escapeHtml(
-            tickerIntelState.search || ""
-          )}" />
-          <select id="tickerSignalFilter" class="trade-input">
-            <option value="all" ${tickerIntelState.signalFilter === "all" ? "selected" : ""}>Ratings</option>
-            <option value="bullish" ${tickerIntelState.signalFilter === "bullish" ? "selected" : ""}>Up (${counts.signal.bullish})</option>
-            <option value="bearish" ${tickerIntelState.signalFilter === "bearish" ? "selected" : ""}>Down (${counts.signal.bearish})</option>
-            <option value="neutral" ${tickerIntelState.signalFilter === "neutral" ? "selected" : ""}>Mixed (${counts.signal.neutral})</option>
-            <option value="no-data" ${tickerIntelState.signalFilter === "no-data" ? "selected" : ""}>No Data (${counts.signal["no-data"]})</option>
-          </select>
-          <select id="tickerPriceFilter" class="trade-input">
-            <option value="all" ${tickerIntelState.priceFilter === "all" ? "selected" : ""}>Prices</option>
-            <option value="under20" ${tickerIntelState.priceFilter === "under20" ? "selected" : ""}>Under $20 (${counts.price.under20})</option>
-            <option value="20to100" ${tickerIntelState.priceFilter === "20to100" ? "selected" : ""}>$20 - $100 (${counts.price["20to100"]})</option>
-            <option value="100to500" ${tickerIntelState.priceFilter === "100to500" ? "selected" : ""}>$100 - $500 (${counts.price["100to500"]})</option>
-            <option value="500plus" ${tickerIntelState.priceFilter === "500plus" ? "selected" : ""}>$500+ (${counts.price["500plus"]})</option>
-            <option value="unknown" ${tickerIntelState.priceFilter === "unknown" ? "selected" : ""}>No Price (${counts.price.unknown})</option>
-          </select>
+          <div class="ticker-filters-inline">
+            <input id="tickerSearchInput" class="trade-input" placeholder="Search symbol (e.g. AAPL)" value="${escapeHtml(
+              tickerIntelState.search || ""
+            )}" />
+            <select id="tickerSignalFilter" class="trade-input">
+              <option value="all" ${tickerIntelState.signalFilter === "all" ? "selected" : ""}>Ratings</option>
+              <option value="bullish" ${tickerIntelState.signalFilter === "bullish" ? "selected" : ""}>Up (${counts.signal.bullish})</option>
+              <option value="bearish" ${tickerIntelState.signalFilter === "bearish" ? "selected" : ""}>Down (${counts.signal.bearish})</option>
+              <option value="neutral" ${tickerIntelState.signalFilter === "neutral" ? "selected" : ""}>Mixed (${counts.signal.neutral})</option>
+              <option value="no-data" ${tickerIntelState.signalFilter === "no-data" ? "selected" : ""}>No Data (${counts.signal["no-data"]})</option>
+            </select>
+            <select id="tickerPriceFilter" class="trade-input">
+              <option value="all" ${tickerIntelState.priceFilter === "all" ? "selected" : ""}>Prices</option>
+              <option value="under20" ${tickerIntelState.priceFilter === "under20" ? "selected" : ""}>Under $20 (${counts.price.under20})</option>
+              <option value="20to100" ${tickerIntelState.priceFilter === "20to100" ? "selected" : ""}>$20 - $100 (${counts.price["20to100"]})</option>
+              <option value="100to500" ${tickerIntelState.priceFilter === "100to500" ? "selected" : ""}>$100 - $500 (${counts.price["100to500"]})</option>
+              <option value="500plus" ${tickerIntelState.priceFilter === "500plus" ? "selected" : ""}>$500+ (${counts.price["500plus"]})</option>
+              <option value="unknown" ${tickerIntelState.priceFilter === "unknown" ? "selected" : ""}>No Price (${counts.price.unknown})</option>
+            </select>
+          </div>
           <div class="sort-mode-row">
             <button type="button" class="sort-mode-btn ${tickerIntelState.sortMode === "best-now" ? "active" : ""}" data-sort-mode="best-now">Best Now</button>
             <button type="button" class="sort-mode-btn ${tickerIntelState.sortMode === "lowest-risk" ? "active" : ""}" data-sort-mode="lowest-risk">Lowest Risk</button>

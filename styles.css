@@ -517,7 +517,7 @@ td {
 
 .ticker-intel-layout {
  display: grid;
-grid-template-columns: 320px 1fr;
+grid-template-columns: 480px 1fr;
  gap: 12px;
 }
 
@@ -588,6 +588,12 @@ grid-template-columns: 320px 1fr;
  display: grid;
  gap: 8px;
  margin-top: 8px;
+}
+
+.ticker-filters-inline {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.35fr) minmax(110px, 1fr) minmax(110px, 1fr);
+  gap: 8px;
 }
 
 .ticker-item {
@@ -1594,6 +1600,10 @@ grid-template-columns: 320px 1fr;
   }
 
  .ticker-intel-layout {
+ grid-template-columns: 1fr;
+ }
+
+ .ticker-filters-inline {
  grid-template-columns: 1fr;
  }
 
