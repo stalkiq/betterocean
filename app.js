@@ -1013,6 +1013,31 @@ function getWarningChipsForTicker(symbol, quote) {
   return chips.slice(0, 3);
 }
 
+function getNewsImpactDirection(title, reportSignal = "neutral") {
+  const text = String(title || "").toLowerCase();
+  if (/beat|record|surge|upgrade|partnership|contract win|approval|expansion|buyback/.test(text)) return "Likely positive";
+  if (/miss|cuts|downgrade|lawsuit|probe|layoff|recall|delay|resign|guidance cut/.test(text)) return "Likely negative";
+  if (String(reportSignal || "").toLowerCase() === "bullish") return "Slightly positive";
+  if (String(reportSignal || "").toLowerCase() === "bearish") return "Slightly negative";
+  return "Unclear";
+}
+
+function getNewsImpactWhy(title) {
+  const text = String(title || "").toLowerCase();
+  if (/earnings|quarter|guidance/.test(text)) return "Earnings headlines can shift expectations for future profits.";
+  if (/ceo|executive|leadership/.test(text)) return "Leadership changes can affect confidence in company strategy.";
+  if (/partnership|contract|deal/.test(text)) return "New deals can increase future sales and market reach.";
+  if (/lawsuit|probe|investigation|regulator/.test(text)) return "Legal or regulatory risk can raise uncertainty.";
+  if (/product|launch|approval|drug|fda/.test(text)) return "Product updates can change growth expectations.";
+  return "News sentiment can influence short-term buying and selling pressure.";
+}
+
+function formatNewsTime(value) {
+  const ms = Date.parse(value || "");
+  if (!Number.isFinite(ms)) return "Recent";
+  return new Date(ms).toLocaleString();
+}
+
 function clampNumber(value, min, max) {
   const n = Number(value);
   if (!Number.isFinite(n)) return min;
@@ -1336,6 +1361,38 @@ function renderTickerIntelView() {
   const selectedQuote = tickerIntelState.quoteBySymbol[selected];
   const selectedCompany = getCompanyName(selected, selectedQuote);
   const selectedPct = selectedQuote ? getOpenDeltaPercent(selectedQuote) : null;
+  const selectedReport = tickerIntelState.reportCache[selected] || null;
+  const reportLoading = tickerIntelState.loading && tickerIntelState.selected === selected;
+  const reportError = tickerIntelState.error || "";
+  const companyExplainer = String(
+    selectedReport?.overview || selectedReport?.narrativeSummary || getCompanySuccessNote(selected)
+  ).trim();
+  const whyToday = [
+    ...(Array.isArray(selectedReport?.catalystWatch) ? selectedReport.catalystWatch.slice(0, 2) : []),
+    ...(Array.isArray(selectedReport?.bullishFactors) ? selectedReport.bullishFactors.slice(0, 1) : []),
+    ...(Array.isArray(selectedReport?.bearishFactors) ? selectedReport.bearishFactors.slice(0, 1) : []),
+  ]
+    .filter(Boolean)
+    .slice(0, 3);
+  const newsTimeline = (Array.isArray(selectedReport?.newsUsed) ? selectedReport.newsUsed : []).slice(0, 5);
+  const newsTimelineHtml = newsTimeline.length
+    ? newsTimeline
+        .map((item) => {
+          const title = String(item?.title || "Headline").trim();
+          const impact = getNewsImpactDirection(title, selectedReport?.signal || "neutral");
+          const why = getNewsImpactWhy(title);
+          const source = String(item?.source || "News").trim();
+          const link = String(item?.link || "").trim();
+          return `<li>
+            <strong>${escapeHtml(title)}</strong>
+            <div class="settings-desc">${escapeHtml(source)} - ${escapeHtml(formatNewsTime(item?.pubDate))}</div>
+            <div class="settings-desc"><strong>Expected impact:</strong> ${escapeHtml(impact)}</div>
+            <div class="settings-desc">${escapeHtml(why)}</div>
+            ${link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noopener noreferrer">Read source</a>` : ""}
+          </li>`;
+        })
+        .join("")
+    : '<li class="settings-desc">No recent headlines yet for this ticker.</li>';
   const rightPaneHtml = `
     <div class="schwab-card">
       <h3>Ticker Workspace</h3>
@@ -1346,18 +1403,29 @@ function renderTickerIntelView() {
         <div><span>Price</span><strong>${selectedQuote ? renderPriceCell(selectedQuote.close) : "-"}</strong></div>
         <div><span>Today</span><strong>${formatPercent(selectedPct)}</strong></div>
       </div>
+      ${
+        reportLoading
+          ? '<div class="do-loading">Building AI explainer and news impact view...</div>'
+          : reportError
+            ? `<div class="do-error"><strong>AI report issue</strong><p>${escapeHtml(reportError)}</p></div>`
+            : ""
+      }
       <section class="schwab-grid">
         <article class="schwab-card">
           <h4>What this company does</h4>
-          <p class="schwab-card-sub">${escapeHtml(getCompanySuccessNote(selected))}</p>
+          <p class="schwab-card-sub">${escapeHtml(companyExplainer || getCompanySuccessNote(selected))}</p>
         </article>
         <article class="schwab-card">
-          <h4>Why investors follow it</h4>
+          <h4>Why today could move this ticker</h4>
           <ul class="ticker-bullets">
-            <li>It reports results every quarter and is tracked by financial media.</li>
-            <li>Its products or services affect real customers and business demand.</li>
-            <li>Its size and visibility can move with market sentiment and news.</li>
+            ${(whyToday.length ? whyToday : ["No major catalyst detected right now."])
+              .map((line) => `<li>${escapeHtml(line)}</li>`)
+              .join("")}
           </ul>
+        </article>
+        <article class="schwab-card">
+          <h4>News impact timeline</h4>
+          <ul class="ticker-bullets">${newsTimelineHtml}</ul>
         </article>
       </section>
     </div>
@@ -1473,8 +1541,16 @@ function wireTickerIntelEvents() {
       const symbol = btn.dataset.ticker;
       if (!symbol) return;
       const safeSymbol = String(symbol).toUpperCase();
-      tickerIntelState = { ...tickerIntelState, selected: safeSymbol, loading: false, error: "" };
+      tickerIntelState = { ...tickerIntelState, selected: safeSymbol, loading: true, error: "" };
       renderTickerIntelView();
+      loadTickerIntelReport(safeSymbol)
+        .then(() => {
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        })
+        .catch((error) => {
+          tickerIntelState = { ...tickerIntelState, loading: false, error: error.message || "Failed to load report." };
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        });
     });
   });
   workspaceTableWrap.querySelectorAll(".ticker-priority-item").forEach((btn) => {
@@ -1482,8 +1558,16 @@ function wireTickerIntelEvents() {
       const symbol = btn.dataset.ticker;
       if (!symbol) return;
       const safeSymbol = String(symbol).toUpperCase();
-      tickerIntelState = { ...tickerIntelState, selected: safeSymbol, loading: false, error: "" };
+      tickerIntelState = { ...tickerIntelState, selected: safeSymbol, loading: true, error: "" };
       renderTickerIntelView();
+      loadTickerIntelReport(safeSymbol)
+        .then(() => {
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        })
+        .catch((error) => {
+          tickerIntelState = { ...tickerIntelState, loading: false, error: error.message || "Failed to load report." };
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        });
     });
   });
 }
@@ -3478,6 +3562,17 @@ function activateTab(tabName) {
     universePromise
       .then(() => {
         renderTickerIntelView();
+        const selectedSymbol = String(tickerIntelState.selected || "").toUpperCase();
+        if (selectedSymbol) {
+          loadTickerIntelReport(selectedSymbol)
+            .then(() => {
+              if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+            })
+            .catch((error) => {
+              tickerIntelState = { ...tickerIntelState, loading: false, error: error.message || "Failed to load report." };
+              if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+            });
+        }
         const needsFreshQuotes =
           !tickerIntelState.quotesUpdatedAt || Date.now() - tickerIntelState.quotesUpdatedAt > TICKER_QUOTES_TTL_MS;
         if (needsFreshQuotes) {
