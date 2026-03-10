@@ -103,7 +103,7 @@ const announcedAgents = new Set();
 let chatHistory = [];
 let schwabSession = { connected: false };
 let schwabData = { accounts: null, openOrders: null, accountError: "" };
-let investmentsMarket = { assets: [], updatedAt: null };
+let investmentsMarket = { assets: [], updatedAt: null, beginnerBrief: null };
 let openingPlaybook = { buckets: [], asOf: null };
 let openingQuotesBySymbol = {};
 const DEFAULT_TICKER_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH"];
@@ -286,6 +286,7 @@ async function loadInvestmentsMarketData() {
   investmentsMarket = {
     assets: Array.isArray(data.assets) ? data.assets : [],
     updatedAt: data.updatedAt || null,
+    beginnerBrief: data?.beginnerBrief || null,
   };
   return investmentsMarket;
 }
@@ -2453,6 +2454,10 @@ function renderInvestmentsView() {
   const advancers = assets.filter((asset) => Number(getOpenDeltaPercent(asset) || 0) > 0).length;
   const decliners = assets.filter((asset) => Number(getOpenDeltaPercent(asset) || 0) < 0).length;
   const flats = Math.max(0, assets.length - advancers - decliners);
+  const beginnerBrief = investmentsMarket.beginnerBrief || null;
+  const takeaways = Array.isArray(beginnerBrief?.takeaways) ? beginnerBrief.takeaways.slice(0, 3) : [];
+  const starterActions = Array.isArray(beginnerBrief?.starterActions) ? beginnerBrief.starterActions.slice(0, 3) : [];
+  const terms = Array.isArray(beginnerBrief?.terms) ? beginnerBrief.terms.slice(0, 3) : [];
 
   const cardHtml = top
     .map(
@@ -2509,12 +2514,49 @@ function renderInvestmentsView() {
     <div class="agent-view">
       <section class="agent-hero">
         <h3>Investments Dashboard</h3>
-        <p>Public market dashboard powered by backend market feeds. Schwab account login is optional for this tab.</p>
+        <p>A beginner-friendly market view. Schwab login is optional for this tab.</p>
+      </section>
+      <section class="schwab-card">
+        <h4>${escapeHtml(beginnerBrief?.headline || "Market in plain English")}</h4>
+        <p class="schwab-card-sub">${escapeHtml(beginnerBrief?.summary || "Quick daily explanation for new investors.")}</p>
+        <div class="schwab-grid">
+          <article class="schwab-card">
+            <h4>What this means today</h4>
+            <ul class="ticker-bullets">
+              ${(takeaways.length ? takeaways : ["This snapshot is mixed, so avoid rushing into one trade."])
+                .map((line) => `<li>${escapeHtml(line)}</li>`)
+                .join("")}
+            </ul>
+          </article>
+          <article class="schwab-card">
+            <h4>Starter actions</h4>
+            <ul class="ticker-bullets">
+              ${(starterActions.length ? starterActions : ["Start small and focus on one or two symbols first."])
+                .map((line) => `<li>${escapeHtml(line)}</li>`)
+                .join("")}
+            </ul>
+          </article>
+          <article class="schwab-card">
+            <h4>Simple terms</h4>
+            <ul class="ticker-bullets">
+              ${(terms.length
+                ? terms
+                : [
+                    { term: "Open", meaning: "First traded price when market starts." },
+                    { term: "Volume", meaning: "How many shares traded today." },
+                    { term: "High / Low", meaning: "Highest and lowest prices so far today." },
+                  ]
+              )
+                .map((item) => `<li><strong>${escapeHtml(item.term)}:</strong> ${escapeHtml(item.meaning)}</li>`)
+                .join("")}
+            </ul>
+          </article>
+        </div>
       </section>
       <section class="schwab-metrics">
-        <article class="schwab-metric-card"><h4>Advancers</h4><div class="schwab-metric-value value-up">${advancers}</div></article>
-        <article class="schwab-metric-card"><h4>Decliners</h4><div class="schwab-metric-value value-down">${decliners}</div></article>
-        <article class="schwab-metric-card"><h4>Neutral</h4><div class="schwab-metric-value value-flat">${flats}</div></article>
+        <article class="schwab-metric-card"><h4>Up today</h4><div class="schwab-metric-value value-up">${advancers}</div></article>
+        <article class="schwab-metric-card"><h4>Down today</h4><div class="schwab-metric-value value-down">${decliners}</div></article>
+        <article class="schwab-metric-card"><h4>Flat today</h4><div class="schwab-metric-value value-flat">${flats}</div></article>
       </section>
       <section class="schwab-metrics">${cardHtml}</section>
       <section class="table-wrap">

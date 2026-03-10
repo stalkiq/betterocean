@@ -1099,6 +1099,114 @@ app.get("/healthz", (_req, res) => {
   sendJson(res, 200, { ok: true, service: "betterocean-api-service" });
 });
 
+async function buildBeginnerMarketBrief(assets) {
+  const safeAssets = Array.isArray(assets) ? assets.slice(0, 8) : [];
+  const deltas = safeAssets
+    .map((asset) => Number((((asset?.close || 0) - (asset?.open || 0)) / (asset?.open || 1)) * 100))
+    .filter((value) => Number.isFinite(value));
+  const upCount = deltas.filter((v) => v > 0).length;
+  const downCount = deltas.filter((v) => v < 0).length;
+  const tone = upCount > downCount ? "mostly up" : downCount > upCount ? "mostly down" : "mixed";
+  const topMover = safeAssets
+    .map((asset) => ({
+      label: asset?.label || asset?.symbol || "Asset",
+      pct: Number((((asset?.close || 0) - (asset?.open || 0)) / (asset?.open || 1)) * 100),
+    }))
+    .filter((row) => Number.isFinite(row.pct))
+    .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct))[0];
+
+  const fallback = {
+    headline: `Today looks ${tone}.`,
+    summary: `${upCount} assets are up and ${downCount} are down in this snapshot.`,
+    takeaways: [
+      topMover ? `${topMover.label} is moving the most right now.` : "No clear leader in this snapshot yet.",
+      "Green means prices are above the opening level. Red means below the opening level.",
+      "Big one-day moves can reverse quickly, so avoid rushing into a single trade.",
+    ],
+    starterActions: [
+      "Start with one or two symbols you understand and track them daily.",
+      "Use small position sizes while learning how prices move after the open.",
+      "Set a clear exit plan before entering any trade.",
+    ],
+    terms: [
+      { term: "Open", meaning: "The first traded price when the market starts." },
+      { term: "High / Low", meaning: "The highest and lowest prices seen so far today." },
+      { term: "Volume", meaning: "How many shares changed hands today." },
+    ],
+    source: "fallback",
+  };
+
+  const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
+  const key = process.env.GRADIENT_AGENT_KEY;
+  if (!endpoint || !key || !safeAssets.length) return fallback;
+
+  try {
+    const base = endpoint.replace(/\/+$/, "");
+    const completionsUrl = base.includes("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const upstream = await postJson(
+      completionsUrl,
+      {
+        model: process.env.GRADIENT_MODEL || "openai-gpt-oss-120b",
+        stream: false,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a beginner-friendly market explainer. Use plain American English and keep output concise.",
+          },
+          {
+            role: "user",
+            content: `Return STRICT JSON only with this shape:
+{
+  "headline":"string",
+  "summary":"string",
+  "takeaways":["string","string","string"],
+  "starterActions":["string","string","string"],
+  "terms":[{"term":"string","meaning":"string"},{"term":"string","meaning":"string"},{"term":"string","meaning":"string"}]
+}
+
+Rules:
+- Explain for beginners with no jargon.
+- Keep each item under 18 words.
+- No markdown.
+
+Market data JSON:
+${JSON.stringify(safeAssets)}
+`,
+          },
+        ],
+      },
+      {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${key}`,
+      }
+    );
+    if (upstream.status < 200 || upstream.status >= 300) return fallback;
+    const parsed = parseJsonFromModelContent(upstream.data?.choices?.[0]?.message?.content);
+    if (!parsed) return fallback;
+    return {
+      headline: String(parsed?.headline || fallback.headline).trim(),
+      summary: String(parsed?.summary || fallback.summary).trim(),
+      takeaways: Array.isArray(parsed?.takeaways) ? parsed.takeaways.slice(0, 3).map((s) => String(s).trim()).filter(Boolean) : fallback.takeaways,
+      starterActions: Array.isArray(parsed?.starterActions)
+        ? parsed.starterActions.slice(0, 3).map((s) => String(s).trim()).filter(Boolean)
+        : fallback.starterActions,
+      terms: Array.isArray(parsed?.terms)
+        ? parsed.terms
+            .slice(0, 3)
+            .map((row) => ({
+              term: String(row?.term || "").trim(),
+              meaning: String(row?.meaning || "").trim(),
+            }))
+            .filter((row) => row.term && row.meaning)
+        : fallback.terms,
+      source: "gradient",
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 app.get(["/market/overview", "/api/market/overview"], async (_req, res) => {
   const cached = getFreshCache(marketOverviewCache, MARKET_OVERVIEW_TTL_MS);
   if (cached) {
@@ -1121,10 +1229,12 @@ app.get(["/market/overview", "/api/market/overview"], async (_req, res) => {
         )
       )
     ).filter(Boolean);
+    const beginnerBrief = await buildBeginnerMarketBrief(assets);
     const payload = {
       source: "stooq",
       updatedAt: new Date().toISOString(),
       assets,
+      beginnerBrief,
     };
     marketOverviewCache.data = payload;
     marketOverviewCache.fetchedAt = Date.now();
