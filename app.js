@@ -129,6 +129,13 @@ const SYMBOL_COMPANY_NAMES = {
   CCL: "Carnival",
   SNAP: "Snap",
   PARA: "Paramount Global",
+  MMM: "3M",
+  AOS: "A. O. Smith",
+  ABT: "Abbott Laboratories",
+  ABBV: "AbbVie",
+  ACN: "Accenture",
+  ADI: "Analog Devices",
+  BG: "Bunge Global",
 };
 const COMPANY_SUCCESS_NOTES = {
   AAPL: "Apple sells devices and services with strong customer loyalty and recurring revenue.",
@@ -370,6 +377,8 @@ function toFiniteNumber(...values) {
 function normalizeCompanyLabel(rawLabel, symbol = "") {
   const raw = String(rawLabel || "").trim();
   if (!raw) return "";
+  const lowered = raw.toLowerCase();
+  if (lowered === "undefined" || lowered === "null" || lowered === "n/a" || lowered === "na") return "";
   const upperRaw = raw.toUpperCase();
   const upperSymbol = String(symbol || "").toUpperCase();
   if (!upperSymbol) return raw;
@@ -395,6 +404,15 @@ function getCompanyName(symbol, quote = null) {
   );
   if (fromQuote) return fromQuote;
   return SYMBOL_COMPANY_NAMES[safeSymbol] || safeSymbol;
+}
+
+function getTickerCardCompanyLine(symbol, quote = null) {
+  const safeSymbol = String(symbol || "").toUpperCase();
+  const companyName = getCompanyName(safeSymbol, quote);
+  if (!companyName || String(companyName).toUpperCase() === safeSymbol) {
+    return "Company name loading...";
+  }
+  return companyName;
 }
 
 function getCompanySuccessNote(symbol) {
@@ -487,7 +505,7 @@ async function fetchTickerQuoteBatch(symbols) {
   if (schwabSession.connected) {
     try {
       const schwabPayload = await schwabApi(
-        `/api/schwab/quotes?symbols=${encodeURIComponent(requested.join(","))}&fields=quote`,
+        `/api/schwab/quotes?symbols=${encodeURIComponent(requested.join(","))}&fields=quote,reference`,
         { method: "GET" }
       );
       const schwabQuotes = parseSchwabQuotesPayload(schwabPayload, requested);
@@ -1339,7 +1357,7 @@ function renderTickerIntelView() {
     .map((symbol) => {
       const quote = tickerIntelState.quoteBySymbol[symbol];
       const pct = quote ? getOpenDeltaPercent(quote) : null;
-      const companyName = getCompanyName(symbol, quote);
+      const companyLine = getTickerCardCompanyLine(symbol, quote);
       const signal = getSignalFromDelta(pct);
       return `
       <button type="button" class="ticker-item ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
@@ -1347,12 +1365,11 @@ function renderTickerIntelView() {
           <span class="ticker-item-symbol">${symbol}</span>
           <span>${escapeHtml(signal.text)}</span>
         </span>
-        <span class="ticker-item-company">${escapeHtml(companyName)}</span>
+        <span class="ticker-item-company">${escapeHtml(companyLine)}</span>
         <span class="ticker-item-bottom">
           <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
           <span>${formatPercent(pct)}</span>
         </span>
-        <span class="ticker-item-context muted">${escapeHtml(getCompanySuccessNote(symbol))}</span>
       </button>
     `;
     })
