@@ -21,12 +21,14 @@ const TICKER_UNIVERSE_TTL_MS = Number(process.env.TICKER_UNIVERSE_TTL_MS || 12 *
 const MARKET_OVERVIEW_TTL_MS = Number(process.env.MARKET_OVERVIEW_TTL_MS || 20 * 1000);
 const OPENING_PLAYBOOK_TTL_MS = Number(process.env.OPENING_PLAYBOOK_TTL_MS || 90 * 1000);
 const TICKER_REPORT_TTL_MS = Number(process.env.TICKER_REPORT_TTL_MS || 5 * 60 * 1000);
+const TICKER_WATCHBOARDS_TTL_MS = Number(process.env.TICKER_WATCHBOARDS_TTL_MS || 3 * 60 * 1000);
 const SCHWAB_CACHE_TTL_MS = Number(process.env.SCHWAB_CACHE_TTL_MS || 12 * 1000);
 
 const sessionStore = new Map();
 const tickerUniverseCache = { symbols: [], fetchedAt: 0 };
 const marketOverviewCache = { data: null, fetchedAt: 0 };
 const openingPlaybookCache = { data: null, fetchedAt: 0 };
+const tickerWatchboardsCache = { data: null, fetchedAt: 0 };
 const tickerReportCache = new Map();
 const HTTPS_KEEPALIVE_AGENT = new https.Agent({
   keepAlive: true,
@@ -1207,6 +1209,145 @@ ${JSON.stringify(safeAssets)}
   }
 }
 
+function sanitizeWatchboardValue(value, allowed, fallback) {
+  const clean = String(value || "").trim().toLowerCase();
+  return allowed.includes(clean) ? clean : fallback;
+}
+
+function normalizeWatchboardLayout(layout, index) {
+  const allowedUniverse = [
+    "sp500",
+    "etf-focus",
+    "tech-focus",
+    "dividend-focus",
+    "big-movers",
+    "high-volatility",
+    "my-holdings",
+  ];
+  const allowedSort = ["best-now", "lowest-risk", "big-movers"];
+  const allowedSignal = ["all", "bullish", "bearish", "neutral", "no-data"];
+  const allowedPrice = ["all", "under20", "20to100", "100to500", "500plus", "unknown"];
+  const id = String(layout?.id || layout?.name || `watchboard-${index + 1}`)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return {
+    id: id || `watchboard-${index + 1}`,
+    name: String(layout?.name || `Watchboard ${index + 1}`).trim(),
+    description: String(layout?.description || "").trim(),
+    universePreset: sanitizeWatchboardValue(layout?.universePreset, allowedUniverse, "sp500"),
+    sortMode: sanitizeWatchboardValue(layout?.sortMode, allowedSort, "best-now"),
+    signalFilter: sanitizeWatchboardValue(layout?.signalFilter, allowedSignal, "all"),
+    priceFilter: sanitizeWatchboardValue(layout?.priceFilter, allowedPrice, "all"),
+    searchHint: String(layout?.searchHint || "").trim().slice(0, 24),
+    focusSymbols: Array.isArray(layout?.focusSymbols)
+      ? layout.focusSymbols
+          .map((symbol) => normalizeTickerSymbol(symbol))
+          .filter(Boolean)
+          .slice(0, 8)
+      : [],
+  };
+}
+
+async function buildTickerWatchboardLayouts() {
+  const fallbackLayouts = [
+    {
+      id: "morning-scanner",
+      name: "Morning Scanner",
+      description: "Liquid names and major ETFs that usually react quickly at the open.",
+      universePreset: "big-movers",
+      sortMode: "big-movers",
+      signalFilter: "all",
+      priceFilter: "all",
+      searchHint: "",
+      focusSymbols: ["SPY", "QQQ", "AAPL", "MSFT", "NVDA"],
+    },
+    {
+      id: "swing-setup-board",
+      name: "Swing Setup Board",
+      description: "Cleaner trend names with less noise for multi-day positioning decisions.",
+      universePreset: "tech-focus",
+      sortMode: "best-now",
+      signalFilter: "bullish",
+      priceFilter: "20to100",
+      searchHint: "",
+      focusSymbols: ["MSFT", "AAPL", "AMD", "QCOM", "CRM"],
+    },
+    {
+      id: "dividend-stability-board",
+      name: "Dividend Stability Board",
+      description: "Income-oriented symbols and slower moving names for steadier watchlists.",
+      universePreset: "dividend-focus",
+      sortMode: "lowest-risk",
+      signalFilter: "all",
+      priceFilter: "all",
+      searchHint: "",
+      focusSymbols: ["KO", "PEP", "PG", "JNJ", "ABBV"],
+    },
+  ].map(normalizeWatchboardLayout);
+
+  const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
+  const key = process.env.GRADIENT_AGENT_KEY;
+  if (!endpoint || !key) {
+    return {
+      source: "fallback",
+      generatedAt: new Date().toISOString(),
+      layouts: fallbackLayouts,
+    };
+  }
+
+  try {
+    const base = endpoint.replace(/\/+$/, "");
+    const completionsUrl = base.includes("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const model = process.env.GRADIENT_MODEL || "openai-gpt-oss-120b";
+    const prompt = `Return STRICT JSON only.
+{
+  "layouts": [
+    {
+      "id": "string",
+      "name": "string",
+      "description": "string",
+      "universePreset": "sp500|etf-focus|tech-focus|dividend-focus|big-movers|high-volatility|my-holdings",
+      "sortMode": "best-now|lowest-risk|big-movers",
+      "signalFilter": "all|bullish|bearish|neutral|no-data",
+      "priceFilter": "all|under20|20to100|100to500|500plus|unknown",
+      "searchHint": "string",
+      "focusSymbols": ["AAPL","MSFT"]
+    }
+  ]
+}
+
+Rules:
+- Return exactly 3 layouts.
+- Focus on practical stock watchboard experiences for active users.
+- Keep names short and description under 14 words.
+- No markdown, no extra text.
+`;
+    const parsed = await gradientStructuredJson({
+      completionsUrl,
+      key,
+      model,
+      systemPrompt:
+        "You design concise market watchboard layouts for a stock analysis UI. Return valid JSON only.",
+      userPrompt: prompt,
+    });
+    const layouts = Array.isArray(parsed?.layouts)
+      ? parsed.layouts.map(normalizeWatchboardLayout).filter((layout) => layout.name)
+      : [];
+    return {
+      source: layouts.length ? "gradient" : "fallback",
+      generatedAt: new Date().toISOString(),
+      layouts: layouts.length ? layouts : fallbackLayouts,
+    };
+  } catch {
+    return {
+      source: "fallback",
+      generatedAt: new Date().toISOString(),
+      layouts: fallbackLayouts,
+    };
+  }
+}
+
 app.get(["/market/overview", "/api/market/overview"], async (_req, res) => {
   const cached = getFreshCache(marketOverviewCache, MARKET_OVERVIEW_TTL_MS);
   if (cached) {
@@ -1480,6 +1621,22 @@ app.get(["/market/ticker-universe", "/api/market/ticker-universe"], async (req, 
       symbols: FALLBACK_TICKER_UNIVERSE.slice(0, limit),
       warning: err.message || "Ticker universe source unavailable.",
     });
+  }
+});
+
+app.get(["/market/ticker-watchboards", "/api/market/ticker-watchboards"], async (_req, res) => {
+  const cached = getFreshCache(tickerWatchboardsCache, TICKER_WATCHBOARDS_TTL_MS);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
+  try {
+    const payload = await buildTickerWatchboardLayouts();
+    tickerWatchboardsCache.data = payload;
+    tickerWatchboardsCache.fetchedAt = Date.now();
+    sendJson(res, 200, payload);
+  } catch (err) {
+    sendJson(res, 502, { error: err.message || "Failed to build ticker watchboards." });
   }
 });
 

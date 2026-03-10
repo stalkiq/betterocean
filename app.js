@@ -31,6 +31,10 @@ const UI_PREFS_KEY = "bo_ui_prefs_v1";
 const MARKET_TAB_TTL_MS = 90 * 1000;
 const TICKER_REPORT_TTL_MS = 5 * 60 * 1000;
 const TICKER_QUOTES_TTL_MS = 2 * 60 * 1000;
+const WATCHBOARD_LAYOUT_TTL_MS = 10 * 60 * 1000;
+const TICKER_LIVE_REFRESH_MS = 15000;
+const TICKER_LIVE_SYMBOL_LIMIT = 60;
+const TICKER_LIVE_PULSE_MS = 2200;
 
 const AGENTS = [
   {
@@ -177,6 +181,13 @@ let tickerIntelState = {
   reportCache: {},
   reportCacheAt: {},
   quotesUpdatedAt: 0,
+  watchboards: [],
+  watchboardsSource: "fallback",
+  watchboardsLoading: false,
+  watchboardsError: "",
+  watchboardsLoadedAt: 0,
+  selectedWatchboardId: "morning-scanner",
+  quotePulseBySymbol: {},
 };
 let shoppingState = {
   items: [],
@@ -199,6 +210,7 @@ let tickerUniverseRequestId = 0;
 let tickerReportRequestId = 0;
 let investmentsLoadedAt = 0;
 let openingPlaybookLoadedAt = 0;
+let tickerIntelLiveRefreshTimer = null;
 
 function getDoToken() {
   return sessionStorage.getItem(TOKEN_KEY) || "";
@@ -364,6 +376,93 @@ async function loadTickerUniverse(limit = 500) {
   };
   applyUniversePreset(tickerIntelState.universePreset || "sp500");
   return tickerIntelState.universe;
+}
+
+function sanitizeWatchboardLayoutId(value, fallback = "custom-layout") {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return raw || fallback;
+}
+
+async function loadTickerWatchboards({ force = false } = {}) {
+  const hasFresh =
+    !force &&
+    Array.isArray(tickerIntelState.watchboards) &&
+    tickerIntelState.watchboards.length > 0 &&
+    Date.now() - Number(tickerIntelState.watchboardsLoadedAt || 0) < WATCHBOARD_LAYOUT_TTL_MS;
+  if (hasFresh) return tickerIntelState.watchboards;
+
+  tickerIntelState = {
+    ...tickerIntelState,
+    watchboardsLoading: true,
+    watchboardsError: "",
+  };
+  if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+
+  try {
+    const data = await schwabApi("/api/market/ticker-watchboards", { method: "GET" });
+    const layouts = Array.isArray(data?.layouts)
+      ? data.layouts
+          .map((layout, index) => {
+            const id = sanitizeWatchboardLayoutId(layout?.id || layout?.name, `layout-${index + 1}`);
+            return {
+              id,
+              name: String(layout?.name || `Watchboard ${index + 1}`).trim(),
+              description: String(layout?.description || "").trim(),
+              universePreset: String(layout?.universePreset || "sp500").trim(),
+              sortMode: String(layout?.sortMode || "best-now").trim(),
+              signalFilter: String(layout?.signalFilter || "all").trim(),
+              priceFilter: String(layout?.priceFilter || "all").trim(),
+              searchHint: String(layout?.searchHint || "").trim(),
+              focusSymbols: Array.isArray(layout?.focusSymbols)
+                ? layout.focusSymbols
+                    .map((s) => String(s || "").trim().toUpperCase())
+                    .filter(Boolean)
+                    .slice(0, 8)
+                : [],
+            };
+          })
+          .filter((layout) => layout.name)
+      : [];
+    const fallbackLayouts = [
+      {
+        id: "morning-scanner",
+        name: "Morning Scanner",
+        description: "Fast opening-move board with liquid names and active price action.",
+        universePreset: "big-movers",
+        sortMode: "big-movers",
+        signalFilter: "all",
+        priceFilter: "all",
+        searchHint: "",
+        focusSymbols: [],
+      },
+    ];
+    const nextLayouts = layouts.length ? layouts : fallbackLayouts;
+    const nextSelected = nextLayouts.some((layout) => layout.id === tickerIntelState.selectedWatchboardId)
+      ? tickerIntelState.selectedWatchboardId
+      : nextLayouts[0].id;
+    tickerIntelState = {
+      ...tickerIntelState,
+      watchboards: nextLayouts,
+      watchboardsSource: String(data?.source || "fallback"),
+      watchboardsLoading: false,
+      watchboardsError: "",
+      watchboardsLoadedAt: Date.now(),
+      selectedWatchboardId: nextSelected,
+    };
+    return nextLayouts;
+  } catch (error) {
+    tickerIntelState = {
+      ...tickerIntelState,
+      watchboardsLoading: false,
+      watchboardsError: error?.message || "Failed to load watchboard layouts.",
+    };
+    if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+    return tickerIntelState.watchboards;
+  }
 }
 
 function toFiniteNumber(...values) {
@@ -551,6 +650,100 @@ function getSignalKeyForQuote(quote) {
   if (pct >= 0.4) return "bullish";
   if (pct <= -0.4) return "bearish";
   return "neutral";
+}
+
+function renderTickerMiniSparkline(quote) {
+  if (!quote || quote.unavailable) return '<span class="ticker-sparkline-empty">-</span>';
+  const open = Number(quote.open);
+  const high = Number(quote.high);
+  const low = Number(quote.low);
+  const close = Number(quote.close);
+  if (![open, high, low, close].every((v) => Number.isFinite(v) && v > 0)) {
+    return '<span class="ticker-sparkline-empty">-</span>';
+  }
+  const values = [open, (open + high) / 2, high, (close + low) / 2, close];
+  const width = 78;
+  const height = 18;
+  const pad = 2;
+  const max = Math.max(...values);
+  const min = Math.min(...values);
+  const range = Math.max(0.0001, max - min);
+  const step = (width - pad * 2) / (values.length - 1);
+  const points = values
+    .map((value, index) => {
+      const x = pad + step * index;
+      const y = pad + ((max - value) / range) * (height - pad * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  const closeX = pad + step * (values.length - 1);
+  const closeY = pad + ((max - close) / range) * (height - pad * 2);
+  return `
+    <svg class="ticker-sparkline" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+      <polyline class="ticker-sparkline-line" points="${points}" />
+      <circle class="ticker-sparkline-dot" cx="${closeX.toFixed(1)}" cy="${closeY.toFixed(1)}" r="1.8"></circle>
+    </svg>
+  `;
+}
+
+function getTickerPulseClass(symbol) {
+  const pulse = tickerIntelState.quotePulseBySymbol[String(symbol || "").toUpperCase()];
+  if (!pulse || !pulse.at) return "";
+  if (Date.now() - Number(pulse.at) > TICKER_LIVE_PULSE_MS) return "";
+  return pulse.direction === "down" ? "live-down" : "live-up";
+}
+
+async function refreshTickerLiveQuotes({ rerender = true } = {}) {
+  const symbols = getFilteredTickerUniverse().slice(0, TICKER_LIVE_SYMBOL_LIMIT);
+  if (!symbols.length) return;
+  try {
+    const quotes = await fetchTickerQuoteBatch(symbols);
+    const bySymbol = { ...tickerIntelState.quoteBySymbol };
+    const pulseBySymbol = { ...tickerIntelState.quotePulseBySymbol };
+    const now = Date.now();
+    quotes.forEach((rawQuote) => {
+      const nextQuote = normalizeUnifiedQuote(rawQuote);
+      if (!nextQuote?.symbol) return;
+      const prevQuote = bySymbol[nextQuote.symbol];
+      bySymbol[nextQuote.symbol] = nextQuote;
+      const prevClose = Number(prevQuote?.close);
+      const nextClose = Number(nextQuote.close);
+      if (Number.isFinite(prevClose) && Number.isFinite(nextClose) && Math.abs(nextClose - prevClose) >= 0.005) {
+        pulseBySymbol[nextQuote.symbol] = {
+          direction: nextClose >= prevClose ? "up" : "down",
+          at: now,
+        };
+      }
+    });
+    tickerIntelState = {
+      ...tickerIntelState,
+      quoteBySymbol: bySymbol,
+      quotePulseBySymbol: pulseBySymbol,
+      quotesUpdatedAt: now,
+    };
+    if (rerender && currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+  } catch {
+    // Keep silent during background live refresh.
+  }
+}
+
+function stopTickerIntelLiveRefresh() {
+  if (tickerIntelLiveRefreshTimer) {
+    clearInterval(tickerIntelLiveRefreshTimer);
+    tickerIntelLiveRefreshTimer = null;
+  }
+}
+
+function startTickerIntelLiveRefresh() {
+  stopTickerIntelLiveRefresh();
+  refreshTickerLiveQuotes({ rerender: true }).catch(() => ({}));
+  tickerIntelLiveRefreshTimer = setInterval(() => {
+    if (currentTab !== TICKER_INTEL_TAB) {
+      stopTickerIntelLiveRefresh();
+      return;
+    }
+    refreshTickerLiveQuotes({ rerender: true }).catch(() => ({}));
+  }, TICKER_LIVE_REFRESH_MS);
 }
 
 async function refreshTickerUniverseQuotes({ rerender = true, force = false } = {}) {
@@ -1248,6 +1441,29 @@ function applyUniversePreset(preset) {
   };
 }
 
+function applyTickerWatchboardLayout(layoutId, { refreshQuotes = true } = {}) {
+  const safeId = sanitizeWatchboardLayoutId(layoutId, "");
+  if (!safeId) return;
+  const layout = (tickerIntelState.watchboards || []).find((item) => item.id === safeId);
+  if (!layout) return;
+  const nextPreset = String(layout.universePreset || "sp500");
+  applyUniversePreset(nextPreset);
+  const nextSelected =
+    Array.isArray(layout.focusSymbols) && layout.focusSymbols.length
+      ? layout.focusSymbols.find((symbol) => tickerIntelState.universe.includes(symbol)) || tickerIntelState.selected
+      : tickerIntelState.selected;
+  tickerIntelState = {
+    ...tickerIntelState,
+    selectedWatchboardId: safeId,
+    signalFilter: layout.signalFilter || "all",
+    priceFilter: layout.priceFilter || "all",
+    sortMode: layout.sortMode || "best-now",
+    search: layout.searchHint || "",
+    selected: nextSelected || tickerIntelState.selected,
+    loadingUniverse: refreshQuotes,
+  };
+}
+
 function getSimpleTickerStatus(scorecard) {
   if (!scorecard || !Number.isFinite(scorecard.overall) || scorecard.overall <= 0) {
     return "Need more market data to rate this ticker.";
@@ -1359,19 +1575,35 @@ function renderTickerIntelView() {
       const pct = quote ? getOpenDeltaPercent(quote) : null;
       const companyLine = getTickerCardCompanyLine(symbol, quote);
       const signal = getSignalFromDelta(pct);
+      const livePulseClass = getTickerPulseClass(symbol);
       return `
-      <button type="button" class="ticker-item ${symbol === selected ? "active" : ""}" data-ticker="${symbol}">
+      <button type="button" class="ticker-item ${symbol === selected ? "active" : ""} ${livePulseClass}" data-ticker="${symbol}">
         <span class="ticker-item-top">
           <span class="ticker-item-symbol">${symbol}</span>
           <span>${escapeHtml(signal.text)}</span>
         </span>
         <span class="ticker-item-company">${escapeHtml(companyLine)}</span>
         <span class="ticker-item-bottom">
-          <span>${quote ? renderPriceCell(quote.close) : "-"}</span>
+          <span class="ticker-item-price">${quote ? renderPriceCell(quote.close) : "-"}</span>
+          <span class="ticker-item-sparkline">${renderTickerMiniSparkline(quote)}</span>
           <span>${formatPercent(pct)}</span>
         </span>
       </button>
     `;
+    })
+    .join("");
+  const watchboards = Array.isArray(tickerIntelState.watchboards) ? tickerIntelState.watchboards : [];
+  const watchboardButtonsHtml = watchboards
+    .slice(0, 6)
+    .map((layout) => {
+      const isActive = layout.id === tickerIntelState.selectedWatchboardId;
+      return `
+        <button type="button" class="watchboard-chip ${isActive ? "active" : ""}" data-watchboard-id="${escapeHtml(layout.id)}" title="${escapeHtml(
+          layout.description || layout.name
+        )}">
+          ${escapeHtml(layout.name)}
+        </button>
+      `;
     })
     .join("");
 
@@ -1452,6 +1684,26 @@ function renderTickerIntelView() {
     <section class="ticker-intel-layout">
       <aside class="ticker-intel-list">
         <h4>Market Coverage</h4>
+        <div class="watchboard-strip">
+          <div class="watchboard-strip-top">
+            <span class="watchboard-label">AI Watchboards</span>
+            <button type="button" class="watchboard-refresh-btn" id="refreshTickerWatchboardsBtn">Regenerate</button>
+          </div>
+          <div class="watchboard-chip-row">
+            ${
+              tickerIntelState.watchboardsLoading
+                ? '<span class="settings-desc">Building Gradient watchboards...</span>'
+                : watchboardButtonsHtml || '<span class="settings-desc">No watchboards loaded yet.</span>'
+            }
+          </div>
+          ${
+            tickerIntelState.watchboardsError
+              ? `<div class="settings-desc">${escapeHtml(tickerIntelState.watchboardsError)}</div>`
+              : `<div class="settings-desc">Source: ${escapeHtml(
+                  tickerIntelState.watchboardsSource || "fallback"
+                )}</div>`
+          }
+        </div>
         <div class="ticker-filters">
           <select id="tickerUniversePreset" class="trade-input">
             <option value="sp500" ${tickerIntelState.universePreset === "sp500" ? "selected" : ""}>S&P 500 Universe</option>
@@ -1547,6 +1799,29 @@ function wireTickerIntelEvents() {
     btn.addEventListener("click", () => {
       tickerIntelState = { ...tickerIntelState, sortMode: btn.dataset.sortMode || "best-now" };
       renderTickerIntelView();
+    });
+  });
+  const watchboardRefreshBtn = document.getElementById("refreshTickerWatchboardsBtn");
+  if (watchboardRefreshBtn) {
+    watchboardRefreshBtn.addEventListener("click", () => {
+      loadTickerWatchboards({ force: true })
+        .then(() => {
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        })
+        .catch(() => {
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        });
+    });
+  }
+  workspaceTableWrap.querySelectorAll("[data-watchboard-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const layoutId = btn.dataset.watchboardId || "";
+      if (!layoutId) return;
+      applyTickerWatchboardLayout(layoutId, { refreshQuotes: true });
+      renderTickerIntelView();
+      refreshTickerUniverseQuotes({ rerender: true, force: true }).catch(() => {
+        if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+      });
     });
   });
   workspaceTableWrap.querySelectorAll("[data-detail-tab]").forEach((btn) => {
@@ -3528,6 +3803,7 @@ function activateTab(tabName) {
 
   stopMarketCountdown();
   stopShoppingMarketClock();
+  stopTickerIntelLiveRefresh();
 
   if (tabName === SCHWAB_CONNECT_TAB) {
     renderSchwabConnectView();
@@ -3574,6 +3850,18 @@ function activateTab(tabName) {
   }
   if (tabName === TICKER_INTEL_TAB) {
     renderTickerIntelLoading();
+    const needsWatchboards =
+      !tickerIntelState.watchboardsLoadedAt ||
+      Date.now() - Number(tickerIntelState.watchboardsLoadedAt || 0) > WATCHBOARD_LAYOUT_TTL_MS;
+    if (needsWatchboards) {
+      loadTickerWatchboards()
+        .then(() => {
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        })
+        .catch(() => {
+          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        });
+    }
     const universePromise =
       tickerIntelState.universe.length >= 50
         ? Promise.resolve(tickerIntelState.universe)
@@ -3597,6 +3885,7 @@ function activateTab(tabName) {
         if (needsFreshQuotes) {
           refreshTickerUniverseQuotes({ rerender: true }).catch(() => ({}));
         }
+        startTickerIntelLiveRefresh();
       })
       .catch((error) => {
         tickerIntelState = {
@@ -3819,8 +4108,12 @@ workspaceRefreshBtn?.addEventListener("click", () => {
         : loadTickerUniverse(500).catch(() => DEFAULT_TICKER_WATCHLIST);
     universePromise
       .then(() => refreshTickerUniverseQuotes({ rerender: true, force: true }))
+      .then(() => loadTickerWatchboards())
       .then(() => loadTickerIntelReport(tickerIntelState.selected || "AAPL"))
-      .then(() => renderTickerIntelView())
+      .then(() => {
+        renderTickerIntelView();
+        startTickerIntelLiveRefresh();
+      })
       .catch((error) => {
         tickerIntelState = { ...tickerIntelState, loading: false, error: error.message || "Refresh failed." };
         renderTickerIntelView();

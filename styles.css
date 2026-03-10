@@ -596,6 +596,57 @@ grid-template-columns: 480px 1fr;
   gap: 8px;
 }
 
+.watchboard-strip {
+  border: 1px solid #2b3f63;
+  border-radius: 10px;
+  padding: 8px;
+  background: rgba(18, 32, 54, 0.45);
+}
+
+.watchboard-strip-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.watchboard-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #a9bfeb;
+  font-weight: 700;
+}
+
+.watchboard-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.watchboard-chip,
+.watchboard-refresh-btn {
+  border: 1px solid #385581;
+  border-radius: 999px;
+  background: #122340;
+  color: #d7e7ff;
+  padding: 5px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.watchboard-chip.active {
+  border-color: #6ea3ff;
+  background: #1a335c;
+}
+
+.watchboard-chip:hover,
+.watchboard-refresh-btn:hover {
+  border-color: #5474af;
+  background: #162a4a;
+}
+
 .ticker-item {
  border: 1px solid #2e4268;
  border-radius: 8px;
@@ -671,6 +722,81 @@ grid-template-columns: 480px 1fr;
  gap: 8px;
  font-size: 12px;
  color: #bdd0f4;
+}
+
+.ticker-item-price {
+  min-width: 62px;
+}
+
+.ticker-item-sparkline {
+  width: 78px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.95;
+}
+
+.ticker-sparkline {
+  width: 78px;
+  height: 18px;
+}
+
+.ticker-sparkline-line {
+  fill: none;
+  stroke: #8eaddf;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.ticker-sparkline-dot {
+  fill: #cddfff;
+}
+
+.ticker-sparkline-empty {
+  font-size: 11px;
+  color: #8ca2cb;
+}
+
+.ticker-item.live-up .ticker-item-price,
+.ticker-item.live-down .ticker-item-price {
+  animation: tickerPulse 0.8s ease-out 1;
+}
+
+.ticker-item.live-up .ticker-sparkline-line,
+.ticker-item.live-down .ticker-sparkline-line {
+  animation: tickerLineGlow 0.8s ease-out 1;
+}
+
+@keyframes tickerPulse {
+  0% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  30% {
+    transform: translateY(-1px);
+    opacity: 0.8;
+  }
+  100% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+@keyframes tickerLineGlow {
+  0% {
+    stroke-width: 1.3;
+    opacity: 0.75;
+  }
+  50% {
+    stroke-width: 2;
+    opacity: 1;
+  }
+  100% {
+    stroke-width: 1.3;
+    opacity: 1;
+  }
 }
 
 .ticker-item-context {
