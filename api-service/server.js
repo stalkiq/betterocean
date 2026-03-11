@@ -22,6 +22,7 @@ const TICKER_UNIVERSE_TTL_MS = Number(process.env.TICKER_UNIVERSE_TTL_MS || 12 *
 const MARKET_OVERVIEW_TTL_MS = Number(process.env.MARKET_OVERVIEW_TTL_MS || 20 * 1000);
 const OPENING_PLAYBOOK_TTL_MS = Number(process.env.OPENING_PLAYBOOK_TTL_MS || 90 * 1000);
 const TICKER_REPORT_TTL_MS = Number(process.env.TICKER_REPORT_TTL_MS || 5 * 60 * 1000);
+const TICKER_REPORT_CACHE_SCOPE = "ticker-report-v6";
 const TICKER_WATCHBOARDS_TTL_MS = Number(process.env.TICKER_WATCHBOARDS_TTL_MS || 3 * 60 * 1000);
 const AGENT_BRIEF_TTL_MS = Number(process.env.AGENT_BRIEF_TTL_MS || 3 * 60 * 1000);
 const SCHWAB_CACHE_TTL_MS = Number(process.env.SCHWAB_CACHE_TTL_MS || 12 * 1000);
@@ -2420,7 +2421,7 @@ app.get(["/market/company-names", "/api/market/company-names"], async (req, res)
 async function refreshTickerReportCache(symbol, { force = false } = {}) {
   const safeSymbol = normalizeTickerSymbol(symbol);
   if (!safeSymbol) throw new Error("Ticker symbol is required.");
-  const redisKey = buildRedisCacheKey("ticker-report-v5", safeSymbol);
+  const redisKey = buildRedisCacheKey(TICKER_REPORT_CACHE_SCOPE, safeSymbol);
 
   if (!force) {
     const redisCached = await getRedisCacheJson(redisKey);
@@ -2458,22 +2459,25 @@ function backgroundRefreshTickerReport(symbol) {
 
 app.get(["/market/ticker-report", "/api/market/ticker-report"], async (req, res) => {
   const symbol = normalizeTickerSymbol(req.query.symbol || "");
+  const force = /^(1|true|yes)$/i.test(String(req.query.force || "").trim());
   if (!symbol) {
     sendJson(res, 400, { error: "symbol query param is required." });
     return;
   }
-  const redisKey = buildRedisCacheKey("ticker-report-v5", symbol);
-  const redisCached = await getRedisCacheJson(redisKey);
-  if (redisCached) {
-    if (parseReportAgeMs(redisCached) > TICKER_REPORT_TTL_MS / 3) backgroundRefreshTickerReport(symbol);
-    sendJson(res, 200, redisCached);
-    return;
-  }
-  const cached = tickerReportCache.get(symbol);
-  if (cached && Date.now() - cached.fetchedAt < TICKER_REPORT_TTL_MS) {
-    if (parseReportAgeMs(cached.data) > TICKER_REPORT_TTL_MS / 3) backgroundRefreshTickerReport(symbol);
-    sendJson(res, 200, cached.data);
-    return;
+  if (!force) {
+    const redisKey = buildRedisCacheKey(TICKER_REPORT_CACHE_SCOPE, symbol);
+    const redisCached = await getRedisCacheJson(redisKey);
+    if (redisCached) {
+      if (parseReportAgeMs(redisCached) > TICKER_REPORT_TTL_MS / 3) backgroundRefreshTickerReport(symbol);
+      sendJson(res, 200, redisCached);
+      return;
+    }
+    const cached = tickerReportCache.get(symbol);
+    if (cached && Date.now() - cached.fetchedAt < TICKER_REPORT_TTL_MS) {
+      if (parseReportAgeMs(cached.data) > TICKER_REPORT_TTL_MS / 3) backgroundRefreshTickerReport(symbol);
+      sendJson(res, 200, cached.data);
+      return;
+    }
   }
   try {
     const report = await refreshTickerReportCache(symbol, { force: true });
