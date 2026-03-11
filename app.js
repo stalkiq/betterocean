@@ -1845,7 +1845,7 @@ function renderTickerIntelView() {
     selectedReport?.companyProfile?.summary ||
       selectedReport?.overview ||
       selectedReport?.narrativeSummary ||
-      `${selectedCompany || selected} is a publicly traded company influenced by earnings and major news flow.`
+      `${selectedCompany || selected} likely sells products or services in its core industry, with demand driven by news and earnings.`
   ).trim();
   const profileSource = String(selectedReport?.companyProfile?.source || "gradient-best-effort").trim();
   const profileUpdatedAt = String(selectedReport?.companyProfile?.updatedAt || selectedReport?.asOf || "").trim();

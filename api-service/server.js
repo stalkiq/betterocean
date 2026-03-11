@@ -166,6 +166,23 @@ const COMPANY_PROFILE_OVERRIDES = {
     source: "curated-profile",
   },
 };
+const COMPANY_BUSINESS_HINTS = {
+  CCL: "runs cruise vacations and onboard travel services.",
+  CF: "manufactures nitrogen fertilizer products for agriculture.",
+  NKE: "designs and sells athletic footwear, apparel, and accessories.",
+  T: "sells wireless, broadband, and communication services.",
+  F: "manufactures and sells cars, trucks, and auto financing.",
+  GM: "manufactures and sells vehicles, parts, and mobility services.",
+  DAL: "sells passenger and cargo airline transportation services.",
+  UAL: "sells passenger and cargo airline transportation services.",
+  AAL: "sells passenger and cargo airline transportation services.",
+  XOM: "produces oil, natural gas, and refined fuel products.",
+  CVX: "produces oil, natural gas, and refined fuel products.",
+  KO: "sells nonalcoholic beverages through global distribution networks.",
+  PEP: "sells beverages and snack foods through retail channels.",
+  WMT: "sells consumer goods through retail stores and e-commerce.",
+  COST: "sells consumer goods through membership warehouse retail.",
+};
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -561,12 +578,29 @@ function getCompanyLookupName(symbol) {
   return SYMBOL_COMPANY_LOOKUP[safe] || safe;
 }
 
+function buildBusinessHint(symbol, companyName = "") {
+  const safe = normalizeTickerSymbol(symbol);
+  const explicit = COMPANY_BUSINESS_HINTS[safe];
+  if (explicit) return explicit;
+  const label = String(companyName || "").toLowerCase();
+  if (label.includes("bank") || label.includes("financial")) return "provides banking, lending, and related financial services.";
+  if (label.includes("energy") || label.includes("petroleum") || label.includes("oil")) {
+    return "produces, transports, or sells energy and fuel products.";
+  }
+  if (label.includes("air") || label.includes("airline")) return "sells passenger travel and cargo transportation services.";
+  if (label.includes("pharma") || label.includes("bio")) return "develops and sells pharmaceutical or biotech products.";
+  if (label.includes("tech") || label.includes("software")) return "builds software, digital platforms, or technology hardware.";
+  if (label.includes("retail") || label.includes("store")) return "sells consumer products through stores and online channels.";
+  return "sells products and services tied to its main industry and customer demand.";
+}
+
 function buildBestEffortCompanyProfile(symbol) {
   const name = getCompanyLookupName(symbol);
+  const businessHint = buildBusinessHint(symbol, name);
   return {
     name,
     description: "Best-effort AI profile",
-    summary: `${name} is a publicly traded company. AI summary is based on market context and recent headlines.`,
+    summary: `${name} ${businessHint} Revenue and sentiment can shift on earnings, guidance, and major headlines.`,
     source: "best-effort",
     updatedAt: new Date().toISOString(),
   };
@@ -717,6 +751,7 @@ async function loadSp500TickerUniverse(limit = 500) {
 }
 
 function buildTickerReportFallback(symbol, quote, news, companyProfile = null) {
+  const businessHint = buildBusinessHint(symbol, companyProfile?.name || getCompanyLookupName(symbol));
   const open = Number(quote?.open || 0);
   const close = Number(quote?.close || 0);
   const deltaPct =
@@ -735,7 +770,7 @@ function buildTickerReportFallback(symbol, quote, news, companyProfile = null) {
     confidence: "medium",
     overview:
       companyProfile?.summary ||
-      `${getCompanyLookupName(symbol)} is a publicly traded company with price action influenced by earnings, guidance, and news.`,
+      `${getCompanyLookupName(symbol)} ${businessHint}`,
     bullishFactors:
       signal === "bullish"
         ? ["Price is trading above today's open, suggesting positive session momentum."]
@@ -751,7 +786,7 @@ function buildTickerReportFallback(symbol, quote, news, companyProfile = null) {
     companyProfile: companyProfile || {
       name: getCompanyLookupName(symbol),
       description: "",
-      summary: `${getCompanyLookupName(symbol)} is a publicly traded company with price action influenced by earnings, guidance, and news.`,
+      summary: `${getCompanyLookupName(symbol)} ${businessHint}`,
       source: "fallback",
       updatedAt: new Date().toISOString(),
     },
@@ -783,8 +818,8 @@ function buildTickerReportFallback(symbol, quote, news, companyProfile = null) {
       company: companyProfile?.summary
         ? [trimToWords(companyProfile.summary, 16)]
         : [
-            `What they do: ${getCompanyLookupName(symbol)} is an actively traded public company.`,
-            "How they make money: Revenue depends on demand for its main products and services.",
+            `What they do: ${getCompanyLookupName(symbol)} ${businessHint}`,
+            "How they make money: Revenue comes from selling those products and services.",
             "Why investors care: Earnings and major headlines can quickly move valuation.",
           ],
       catalyst: news.slice(0, 3).map((item) => trimToWords(item?.title || "", 14)).filter(Boolean),
@@ -796,8 +831,8 @@ function buildTickerReportFallback(symbol, quote, news, companyProfile = null) {
       bullets: companyProfile?.summary
         ? [trimToWords(companyProfile.summary, 14)]
         : [
-            `What they do: ${getCompanyLookupName(symbol)} operates in public markets.`,
-            "How they make money: Revenue comes from its core products and services.",
+            `What they do: ${getCompanyLookupName(symbol)} ${businessHint}`,
+            "How they make money: Revenue comes from customer demand for those offerings.",
             "Why investors care: Earnings and guidance can shift sentiment quickly.",
           ],
       source: "fallback",
@@ -1117,6 +1152,7 @@ ${JSON.stringify(
     name: companyProfile?.name || getCompanyLookupName(safeSymbol),
     sector: companyProfile?.description || "",
     products: companyProfile?.summary || "",
+    businessHint: buildBusinessHint(safeSymbol, companyProfile?.name || getCompanyLookupName(safeSymbol)),
     latestFilingsOrNews: Array.isArray(news) ? news.slice(0, 5).map((item) => item?.title || "").filter(Boolean) : [],
   },
   null,
@@ -1135,6 +1171,8 @@ Return STRICT JSON:
 Rules:
 - 2-3 bullets only, plain American English.
 - Keep each bullet under 18 words.
+- Must name concrete products/services the company likely sells or manufactures.
+- Do not use generic phrases like "publicly traded company" or "operates in public markets".
 - No markdown, no extra text.
 - Make a best-effort inference from company name and headlines when profile fields are limited.
 `,
@@ -1144,8 +1182,11 @@ Rules:
         bullets: explainerBullets.length
           ? explainerBullets
           : [
-              `What they do: ${getCompanyLookupName(safeSymbol)} is a publicly traded company.`,
-              "How they make money: Revenue depends on demand for its main products and services.",
+              `What they do: ${getCompanyLookupName(safeSymbol)} ${buildBusinessHint(
+                safeSymbol,
+                companyProfile?.name || getCompanyLookupName(safeSymbol)
+              )}`,
+              "How they make money: Revenue depends on customer demand for those offerings.",
               "Why investors care: Earnings results and major news can quickly change sentiment.",
             ],
         source: "gradient-best-effort",
@@ -1154,8 +1195,11 @@ Rules:
     } catch {
       companyExplainer = {
         bullets: [
-          `What they do: ${getCompanyLookupName(safeSymbol)} is a publicly traded company.`,
-          "How they make money: Revenue depends on demand for its core products and services.",
+          `What they do: ${getCompanyLookupName(safeSymbol)} ${buildBusinessHint(
+            safeSymbol,
+            companyProfile?.name || getCompanyLookupName(safeSymbol)
+          )}`,
+          "How they make money: Revenue depends on customer demand for those offerings.",
           "Why investors care: Earnings and headlines can quickly move the stock.",
         ],
         source: "best-effort-fallback",
@@ -1315,7 +1359,10 @@ Rules:
       companyProfile: companyProfile || {
         name: getCompanyLookupName(safeSymbol),
         description: "",
-        summary: `${getCompanyLookupName(safeSymbol)} summary is being generated by Gradient AI.`,
+        summary: `${getCompanyLookupName(safeSymbol)} ${buildBusinessHint(
+          safeSymbol,
+          companyProfile?.name || getCompanyLookupName(safeSymbol)
+        )}`,
         source: "fallback",
         updatedAt: new Date().toISOString(),
       },
