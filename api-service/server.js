@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const express = require("express");
 const https = require("https");
+const { createClient } = require("redis");
 const {
   buildAuthorizeUrl,
   exchangeCodeForToken,
@@ -23,6 +24,8 @@ const OPENING_PLAYBOOK_TTL_MS = Number(process.env.OPENING_PLAYBOOK_TTL_MS || 90
 const TICKER_REPORT_TTL_MS = Number(process.env.TICKER_REPORT_TTL_MS || 5 * 60 * 1000);
 const TICKER_WATCHBOARDS_TTL_MS = Number(process.env.TICKER_WATCHBOARDS_TTL_MS || 3 * 60 * 1000);
 const SCHWAB_CACHE_TTL_MS = Number(process.env.SCHWAB_CACHE_TTL_MS || 12 * 1000);
+const REDIS_URL = process.env.REDIS_URL || process.env.DO_REDIS_URL || "";
+const REDIS_CACHE_PREFIX = process.env.REDIS_CACHE_PREFIX || "bo:cache:v1";
 
 const sessionStore = new Map();
 const tickerUniverseCache = { symbols: [], fetchedAt: 0 };
@@ -30,6 +33,8 @@ const marketOverviewCache = { data: null, fetchedAt: 0 };
 const openingPlaybookCache = { data: null, fetchedAt: 0 };
 const tickerWatchboardsCache = { data: null, fetchedAt: 0 };
 const tickerReportCache = new Map();
+let redisClient = null;
+let redisReady = false;
 const HTTPS_KEEPALIVE_AGENT = new https.Agent({
   keepAlive: true,
   keepAliveMsecs: 1500,
@@ -201,6 +206,60 @@ function getFreshCache(cacheEntry, ttlMs) {
   if (!cacheEntry || !cacheEntry.data || !cacheEntry.fetchedAt) return null;
   if (Date.now() - cacheEntry.fetchedAt > ttlMs) return null;
   return cacheEntry.data;
+}
+
+function buildRedisCacheKey(scope, id = "") {
+  const safeScope = String(scope || "generic")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9:_-]+/g, "-");
+  const safeId = String(id || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9,._:-]+/g, "-");
+  return safeId ? `${REDIS_CACHE_PREFIX}:${safeScope}:${safeId}` : `${REDIS_CACHE_PREFIX}:${safeScope}`;
+}
+
+async function getRedisCacheJson(key) {
+  if (!redisReady || !redisClient || !key) return null;
+  try {
+    const raw = await redisClient.get(key);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function setRedisCacheJson(key, payload, ttlMs) {
+  if (!redisReady || !redisClient || !key || payload == null) return;
+  try {
+    const ttlSec = Math.max(1, Math.floor(Number(ttlMs || 0) / 1000));
+    await redisClient.set(key, JSON.stringify(payload), { EX: ttlSec });
+  } catch {
+    // Ignore Redis cache writes to keep request path resilient.
+  }
+}
+
+async function initRedisCache() {
+  if (!REDIS_URL) {
+    console.log("Redis cache disabled: REDIS_URL not set.");
+    return;
+  }
+  try {
+    redisClient = createClient({ url: REDIS_URL });
+    redisClient.on("error", (err) => {
+      redisReady = false;
+      console.error("Redis client error:", err?.message || err);
+    });
+    await redisClient.connect();
+    redisReady = true;
+    console.log("Redis cache connected.");
+  } catch (err) {
+    redisReady = false;
+    redisClient = null;
+    console.error("Redis cache init failed:", err?.message || err);
+  }
 }
 
 function readSessionCache(session, key, ttlMs = SCHWAB_CACHE_TTL_MS) {
@@ -443,6 +502,11 @@ async function fetchTickerNews(symbol, limit = 8) {
 
 async function loadSp500TickerUniverse(limit = 500) {
   const now = Date.now();
+  const redisKey = buildRedisCacheKey("ticker-universe", String(limit));
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (Array.isArray(redisCached?.symbols) && redisCached.symbols.length >= 100) {
+    return redisCached.symbols.slice(0, limit);
+  }
   if (tickerUniverseCache.symbols.length >= 200 && now - tickerUniverseCache.fetchedAt < TICKER_UNIVERSE_TTL_MS) {
     return tickerUniverseCache.symbols.slice(0, limit);
   }
@@ -496,6 +560,15 @@ async function loadSp500TickerUniverse(limit = 500) {
   }
   tickerUniverseCache.symbols = unique;
   tickerUniverseCache.fetchedAt = now;
+  await setRedisCacheJson(
+    redisKey,
+    {
+      source: "wikipedia-sp500",
+      updatedAt: new Date().toISOString(),
+      symbols: unique,
+    },
+    TICKER_UNIVERSE_TTL_MS
+  );
   return unique;
 }
 
@@ -1349,6 +1422,12 @@ Rules:
 }
 
 app.get(["/market/overview", "/api/market/overview"], async (_req, res) => {
+  const redisKey = buildRedisCacheKey("market-overview");
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached) {
+    sendJson(res, 200, redisCached);
+    return;
+  }
   const cached = getFreshCache(marketOverviewCache, MARKET_OVERVIEW_TTL_MS);
   if (cached) {
     sendJson(res, 200, cached);
@@ -1379,6 +1458,7 @@ app.get(["/market/overview", "/api/market/overview"], async (_req, res) => {
     };
     marketOverviewCache.data = payload;
     marketOverviewCache.fetchedAt = Date.now();
+    await setRedisCacheJson(redisKey, payload, MARKET_OVERVIEW_TTL_MS);
     sendJson(res, 200, payload);
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to load market overview data." });
@@ -1539,6 +1619,12 @@ Rules:
 }
 
 app.get(["/market/opening-playbook", "/api/market/opening-playbook"], async (_req, res) => {
+  const redisKey = buildRedisCacheKey("opening-playbook");
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached) {
+    sendJson(res, 200, redisCached);
+    return;
+  }
   const cached = getFreshCache(openingPlaybookCache, OPENING_PLAYBOOK_TTL_MS);
   if (cached) {
     sendJson(res, 200, cached);
@@ -1548,6 +1634,7 @@ app.get(["/market/opening-playbook", "/api/market/opening-playbook"], async (_re
     const playbook = await buildOpeningPlaybook();
     openingPlaybookCache.data = playbook;
     openingPlaybookCache.fetchedAt = Date.now();
+    await setRedisCacheJson(redisKey, playbook, OPENING_PLAYBOOK_TTL_MS);
     sendJson(res, 200, playbook);
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to build opening playbook." });
@@ -1564,6 +1651,12 @@ app.get(["/market/quotes", "/api/market/quotes"], async (req, res) => {
     sendJson(res, 400, { error: "symbols query param is required." });
     return;
   }
+  const redisKey = buildRedisCacheKey("market-quotes", symbols.join(","));
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached) {
+    sendJson(res, 200, redisCached);
+    return;
+  }
 
   try {
     const quotes = (
@@ -1575,10 +1668,12 @@ app.get(["/market/quotes", "/api/market/quotes"], async (req, res) => {
     ).filter(Boolean);
 
     const bySymbol = Object.fromEntries(quotes.map((quote) => [quote.label.toUpperCase(), quote]));
-    sendJson(res, 200, {
+    const payload = {
       updatedAt: new Date().toISOString(),
       quotes: symbols.map((symbol) => bySymbol[symbol] || { symbol, label: symbol, unavailable: true }),
-    });
+    };
+    await setRedisCacheJson(redisKey, payload, 15 * 1000);
+    sendJson(res, 200, payload);
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to load market quotes." });
   }
@@ -1590,6 +1685,12 @@ app.get(["/market/ticker-report", "/api/market/ticker-report"], async (req, res)
     sendJson(res, 400, { error: "symbol query param is required." });
     return;
   }
+  const redisKey = buildRedisCacheKey("ticker-report", symbol);
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached) {
+    sendJson(res, 200, redisCached);
+    return;
+  }
   const cached = tickerReportCache.get(symbol);
   if (cached && Date.now() - cached.fetchedAt < TICKER_REPORT_TTL_MS) {
     sendJson(res, 200, cached.data);
@@ -1598,6 +1699,7 @@ app.get(["/market/ticker-report", "/api/market/ticker-report"], async (req, res)
   try {
     const report = await buildTickerDeepDiveReport(symbol);
     tickerReportCache.set(symbol, { data: report, fetchedAt: Date.now() });
+    await setRedisCacheJson(redisKey, report, TICKER_REPORT_TTL_MS);
     sendJson(res, 200, report);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to build ticker report." });
@@ -1625,6 +1727,12 @@ app.get(["/market/ticker-universe", "/api/market/ticker-universe"], async (req, 
 });
 
 app.get(["/market/ticker-watchboards", "/api/market/ticker-watchboards"], async (_req, res) => {
+  const redisKey = buildRedisCacheKey("ticker-watchboards");
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached) {
+    sendJson(res, 200, redisCached);
+    return;
+  }
   const cached = getFreshCache(tickerWatchboardsCache, TICKER_WATCHBOARDS_TTL_MS);
   if (cached) {
     sendJson(res, 200, cached);
@@ -1634,6 +1742,7 @@ app.get(["/market/ticker-watchboards", "/api/market/ticker-watchboards"], async 
     const payload = await buildTickerWatchboardLayouts();
     tickerWatchboardsCache.data = payload;
     tickerWatchboardsCache.fetchedAt = Date.now();
+    await setRedisCacheJson(redisKey, payload, TICKER_WATCHBOARDS_TTL_MS);
     sendJson(res, 200, payload);
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to build ticker watchboards." });
@@ -2136,6 +2245,11 @@ app.delete(["/schwab/orders/:orderId", "/api/schwab/orders/:orderId"], requireSc
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`API service listening on port ${PORT}`);
-});
+async function startServer() {
+  await initRedisCache();
+  app.listen(PORT, () => {
+    console.log(`API service listening on port ${PORT}`);
+  });
+}
+
+startServer();
