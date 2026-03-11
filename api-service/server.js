@@ -125,6 +125,43 @@ const SYMBOL_COMPANY_LOOKUP = {
   CSCO: "Cisco",
   ORCL: "Oracle Corporation",
 };
+const TRUSTED_COMPANY_PROFILE_OVERRIDES = {
+  AVGO: {
+    name: "Broadcom Inc.",
+    description: "Semiconductors and infrastructure software",
+    summary:
+      "Broadcom builds chips for networking, data centers, broadband, and wireless. It also sells infrastructure software used by enterprises. Investors track product demand, AI data-center spending, and software subscription growth.",
+    source: "curated-profile",
+  },
+  AAPL: {
+    name: "Apple Inc.",
+    description: "Consumer technology",
+    summary:
+      "Apple sells iPhone, Mac, iPad, and wearables, plus services like iCloud and Apple TV+. It makes money from device sales and recurring subscriptions. Investors watch product cycles, services growth, and margins.",
+    source: "curated-profile",
+  },
+  MSFT: {
+    name: "Microsoft Corporation",
+    description: "Enterprise software and cloud",
+    summary:
+      "Microsoft sells business software and Azure cloud services. It earns from subscriptions, cloud usage, and enterprise licensing. Investors focus on AI product adoption, cloud growth, and corporate spending trends.",
+    source: "curated-profile",
+  },
+  NVDA: {
+    name: "NVIDIA Corporation",
+    description: "Semiconductors",
+    summary:
+      "NVIDIA designs GPUs and AI accelerators used in data centers, gaming, and professional systems. Revenue is driven by chip demand and platform ecosystems. Investors watch supply, pricing power, and hyperscaler orders.",
+    source: "curated-profile",
+  },
+  GOOGL: {
+    name: "Alphabet Inc.",
+    description: "Internet services and advertising",
+    summary:
+      "Alphabet runs Google Search, YouTube, and cloud services. It primarily earns from digital advertising and cloud subscriptions. Investors monitor ad demand, AI search changes, and cloud profitability.",
+    source: "curated-profile",
+  },
+};
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -531,6 +568,13 @@ function hasTrustedCompanySource(companyProfile) {
 async function fetchCompanyProfile(symbol, news = []) {
   const safe = normalizeTickerSymbol(symbol);
   if (!safe) return null;
+  const trustedOverride = TRUSTED_COMPANY_PROFILE_OVERRIDES[safe];
+  if (trustedOverride) {
+    return {
+      ...trustedOverride,
+      updatedAt: new Date().toISOString(),
+    };
+  }
   const candidates = [getCompanyLookupName(safe)];
   const firstNewsTitle = String(news?.[0]?.title || "").trim();
   const fromNews = firstNewsTitle
@@ -1879,7 +1923,7 @@ app.get(["/market/ticker-report", "/api/market/ticker-report"], async (req, res)
     sendJson(res, 400, { error: "symbol query param is required." });
     return;
   }
-  const redisKey = buildRedisCacheKey("ticker-report", symbol);
+  const redisKey = buildRedisCacheKey("ticker-report-v2", symbol);
   const redisCached = await getRedisCacheJson(redisKey);
   if (redisCached) {
     sendJson(res, 200, redisCached);
