@@ -25,6 +25,14 @@ const SHOPPING_TAB = "Shopping";
 const TICKER_DETAIL_TAB_PREFIX = "Ticker ";
 const HOME_TAB = SCHWAB_CONNECT_TAB;
 const SCHWAB_FUNDING_URL = "https://www.schwab.com/fund-your-account";
+const TAB_THEME_CLASS_MAP = {
+  [SCHWAB_CONNECT_TAB]: "theme-schwab",
+  [PORTFOLIO_TAB]: "theme-holdings",
+  [INVESTMENTS_TAB]: "theme-investments",
+  [TICKER_INTEL_TAB]: "theme-ticker-intel",
+  [TIME_TAB]: "theme-time",
+  [SHOPPING_TAB]: "theme-shopping",
+};
 const RESPONSE_STYLE_PROMPT =
   "Reply in 3-6 concise bullet points with short, scannable lines. Keep spacing clean and avoid long paragraphs.";
 const UI_PREFS_KEY = "bo_ui_prefs_v1";
@@ -211,6 +219,15 @@ let tickerIntelState = {
   compareSymbols: [],
   maxVisible: TICKER_DEFAULT_VISIBLE_COUNT,
 };
+
+function applyTabTheme(tabName) {
+  if (!appShell) return;
+  const themeClasses = Object.values(TAB_THEME_CLASS_MAP);
+  themeClasses.forEach((themeClass) => appShell.classList.remove(themeClass));
+  const targetTab = isTickerDetailTab(tabName) ? TICKER_INTEL_TAB : tabName;
+  const themeClass = TAB_THEME_CLASS_MAP[targetTab] || TAB_THEME_CLASS_MAP[SCHWAB_CONNECT_TAB];
+  if (themeClass) appShell.classList.add(themeClass);
+}
 let shoppingState = {
   items: [],
   submitting: false,
@@ -4062,6 +4079,7 @@ function activateTab(tabName) {
   ) {
     openTabs.add(SCHWAB_CONNECT_TAB);
     currentTab = SCHWAB_CONNECT_TAB;
+    applyTabTheme(SCHWAB_CONNECT_TAB);
     titleEl.textContent = SCHWAB_CONNECT_TAB;
     subEl.textContent = "Schwab OAuth required";
     renderTabs(SCHWAB_CONNECT_TAB);
@@ -4070,6 +4088,7 @@ function activateTab(tabName) {
   }
 
   currentTab = tabName;
+  applyTabTheme(tabName);
   const agent = AGENT_BY_TAB[tabName];
 
   titleEl.textContent = tabName;

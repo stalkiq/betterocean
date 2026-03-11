@@ -23,6 +23,13 @@
   --state-base: var(--blue-800);
   --state-active: var(--blue-550);
   --state-live: var(--blue-350);
+  --tab-accent: var(--blue-450);
+  --tab-gradient-start: var(--blue-700);
+  --tab-gradient-end: var(--blue-800);
+  --workspace-glow: rgba(68, 109, 179, 0.2);
+  --card-border: var(--blue-700);
+  --card-bg-start: var(--blue-900);
+  --card-bg-end: var(--blue-950);
 }
 
 * {
@@ -72,6 +79,54 @@ body {
 .app-shell.market-open .ticker-intel-report {
   border-color: var(--blue-500);
   box-shadow: 0 0 0 1px rgba(98, 151, 231, 0.26);
+}
+
+.app-shell.theme-schwab {
+  --tab-accent: #63a3ee;
+  --tab-gradient-start: #235084;
+  --tab-gradient-end: #183a64;
+  --workspace-glow: rgba(70, 128, 212, 0.2);
+  --card-border: #2f5b8e;
+}
+
+.app-shell.theme-holdings {
+  --tab-accent: #74b8ff;
+  --tab-gradient-start: #2b5f95;
+  --tab-gradient-end: #1c436f;
+  --workspace-glow: rgba(92, 153, 224, 0.23);
+  --card-border: #336495;
+}
+
+.app-shell.theme-investments {
+  --tab-accent: #6ca9f4;
+  --tab-gradient-start: #26598f;
+  --tab-gradient-end: #1a3f6a;
+  --workspace-glow: rgba(88, 146, 221, 0.22);
+  --card-border: #2f5d93;
+}
+
+.app-shell.theme-ticker-intel {
+  --tab-accent: #88c4ff;
+  --tab-gradient-start: #2f68a4;
+  --tab-gradient-end: #1f4b79;
+  --workspace-glow: rgba(105, 170, 246, 0.25);
+  --card-border: #3970a8;
+}
+
+.app-shell.theme-time {
+  --tab-accent: #7fc3ff;
+  --tab-gradient-start: #2c639f;
+  --tab-gradient-end: #1d486f;
+  --workspace-glow: rgba(97, 164, 239, 0.24);
+  --card-border: #376ca2;
+}
+
+.app-shell.theme-shopping {
+  --tab-accent: #93caff;
+  --tab-gradient-start: #3470b0;
+  --tab-gradient-end: #255381;
+  --workspace-glow: rgba(122, 184, 255, 0.26);
+  --card-border: #3d77b1;
 }
 
 .icon-rail {
@@ -191,8 +246,8 @@ body {
 
 .top-tab.active {
   color: #fff;
-  border-color: var(--blue-450);
-  background: linear-gradient(180deg, var(--blue-700), var(--blue-800));
+  border-color: var(--tab-accent);
+  background: linear-gradient(180deg, var(--tab-gradient-start), var(--tab-gradient-end));
   box-shadow: inset 0 1px 0 rgba(177, 214, 255, 0.3);
 }
 
@@ -224,7 +279,7 @@ body {
 .workspace {
   padding: 12px;
   overflow: auto;
-  background: radial-gradient(circle at top left, rgba(68, 109, 179, 0.2), rgba(13, 24, 44, 0.15) 42%, transparent 75%);
+  background: radial-gradient(circle at top left, var(--workspace-glow), rgba(13, 24, 44, 0.15) 42%, transparent 75%);
 }
 
 .workspace-head {
@@ -270,7 +325,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
-  background: linear-gradient(180deg, var(--blue-900), var(--blue-950));
+  background: linear-gradient(180deg, var(--card-bg-start), var(--card-bg-end));
 }
 
 table {
@@ -1399,9 +1454,9 @@ max-width: 270px;
 }
 
 .schwab-card {
-  border: 1px solid var(--blue-700);
+  border: 1px solid var(--card-border);
   border-radius: 12px;
-  background: linear-gradient(180deg, var(--blue-900), var(--blue-950));
+  background: linear-gradient(180deg, var(--card-bg-start), var(--card-bg-end));
   padding: 14px;
 }
 
