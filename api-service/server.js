@@ -1185,8 +1185,8 @@ Return STRICT JSON:
 Rules:
 - 2-3 bullets only, plain American English.
 - Keep each bullet under 18 words.
-- `companyName` should be the best full company name you can infer.
-- `oneLiner` must describe what the company sells or manufactures in plain English.
+- companyName should be the best full company name you can infer.
+- oneLiner must describe what the company sells or manufactures in plain English.
 - Must name concrete products/services the company likely sells or manufactures.
 - Do not use generic phrases like "publicly traded company" or "operates in public markets".
 - No markdown, no extra text.
