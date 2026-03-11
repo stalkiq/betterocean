@@ -144,6 +144,7 @@ const SYMBOL_COMPANY_NAMES = {
   KHC: "Kraft Heinz",
   CCL: "Carnival",
   ADM: "Archer-Daniels-Midland Co.",
+  EXE: "Expand Energy Corp",
   SNAP: "Snap",
   PARA: "Paramount Global",
   MMM: "3M",

@@ -649,6 +649,37 @@ async function resolveCompanyNamesForSymbols(symbols = []) {
   return out;
 }
 
+async function resolvePrimaryCompanyName(symbol) {
+  const safe = normalizeTickerSymbol(symbol);
+  if (!safe) return "";
+  const names = await resolveCompanyNamesForSymbols([safe]).catch(() => ({}));
+  return String(names?.[safe] || getCompanyLookupName(safe) || safe).trim();
+}
+
+function applyResolvedNameToCompanyProfile(symbol, companyProfile = null, resolvedName = "") {
+  const safe = normalizeTickerSymbol(symbol);
+  if (!safe) return companyProfile;
+  const canonicalName = String(resolvedName || getCompanyLookupName(safe) || safe).trim() || safe;
+  if (companyProfile && typeof companyProfile === "object") {
+    const existingName = String(companyProfile?.name || "").trim();
+    const shouldOverwriteName = !existingName || normalizeTickerSymbol(existingName) === safe;
+    const mergedName = shouldOverwriteName ? canonicalName : existingName;
+    const summary = String(companyProfile?.summary || "").trim();
+    return {
+      ...companyProfile,
+      name: mergedName,
+      summary: summary || `${mergedName} ${buildBusinessHint(safe, mergedName)}`,
+    };
+  }
+  return {
+    name: canonicalName,
+    description: "",
+    summary: `${canonicalName} ${buildBusinessHint(safe, canonicalName)}`,
+    source: "resolved-name",
+    updatedAt: new Date().toISOString(),
+  };
+}
+
 function buildBusinessHint(symbol, companyName = "") {
   const safe = normalizeTickerSymbol(symbol);
   const explicit = COMPANY_BUSINESS_HINTS[safe];
@@ -1187,7 +1218,9 @@ async function buildTickerDeepDiveReport(symbol) {
     fetchStooqQuote(normalizeTickerForStooq(safeSymbol), safeSymbol).catch(() => null),
     fetchTickerNews(safeSymbol, 8).catch(() => []),
   ]);
-  const companyProfile = await fetchCompanyProfile(safeSymbol, news).catch(() => null);
+  const resolvedCompanyName = await resolvePrimaryCompanyName(safeSymbol).catch(() => getCompanyLookupName(safeSymbol));
+  const fetchedCompanyProfile = await fetchCompanyProfile(safeSymbol, news).catch(() => null);
+  const companyProfile = applyResolvedNameToCompanyProfile(safeSymbol, fetchedCompanyProfile, resolvedCompanyName);
 
   const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
   const key = process.env.GRADIENT_AGENT_KEY;
