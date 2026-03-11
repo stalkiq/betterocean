@@ -584,6 +584,12 @@ grid-template-columns: 480px 1fr;
  padding-right: 2px;
 }
 
+.ticker-list-footer {
+  margin-top: 8px;
+  display: grid;
+  gap: 6px;
+}
+
 .ticker-filters {
  display: grid;
  gap: 8px;

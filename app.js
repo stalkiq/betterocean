@@ -33,8 +33,11 @@ const TICKER_REPORT_TTL_MS = 5 * 60 * 1000;
 const TICKER_QUOTES_TTL_MS = 2 * 60 * 1000;
 const WATCHBOARD_LAYOUT_TTL_MS = 10 * 60 * 1000;
 const TICKER_LIVE_REFRESH_MS = 15000;
-const TICKER_LIVE_SYMBOL_LIMIT = 60;
+const TICKER_LIVE_SYMBOL_LIMIT = 40;
 const TICKER_LIVE_PULSE_MS = 2200;
+const TICKER_INITIAL_UNIVERSE_LIMIT = 220;
+const TICKER_DEFAULT_VISIBLE_COUNT = 90;
+const TICKER_VISIBLE_INCREMENT = 60;
 
 const AGENTS = [
   {
@@ -206,6 +209,7 @@ let tickerIntelState = {
   selectedWatchboardId: "morning-scanner",
   quotePulseBySymbol: {},
   compareSymbols: [],
+  maxVisible: TICKER_DEFAULT_VISIBLE_COUNT,
 };
 let shoppingState = {
   items: [],
@@ -527,7 +531,7 @@ function getTickerCardCompanyLine(symbol, quote = null) {
   const safeSymbol = String(symbol || "").toUpperCase();
   const companyName = getCompanyName(safeSymbol, quote);
   if (!companyName || String(companyName).toUpperCase() === safeSymbol) {
-    return "Company name loading...";
+    return SYMBOL_COMPANY_NAMES[safeSymbol] || `${safeSymbol} Company`;
   }
   return companyName;
 }
@@ -798,7 +802,12 @@ async function refreshTickerUniverseQuotes({ rerender = true, force = false } = 
     return tickerUniverseQuotesPromise;
   }
 
-  const symbols = tickerIntelState.universe.length ? tickerIntelState.universe : DEFAULT_TICKER_WATCHLIST;
+  const universeSymbols = tickerIntelState.universe.length ? tickerIntelState.universe : DEFAULT_TICKER_WATCHLIST;
+  const desiredLoadCount = Math.max(
+    TICKER_INITIAL_UNIVERSE_LIMIT,
+    Number(tickerIntelState.maxVisible || TICKER_DEFAULT_VISIBLE_COUNT) + 80
+  );
+  const symbols = universeSymbols.slice(0, Math.min(universeSymbols.length, desiredLoadCount));
   const chunkSize = 50;
   const requestId = ++tickerUniverseRequestId;
   const chunks = [];
@@ -835,7 +844,8 @@ async function refreshTickerUniverseQuotes({ rerender = true, force = false } = 
         loaded = Math.min(symbols.length, loaded + chunk.length);
         if (requestId !== tickerUniverseRequestId) return;
         tickerIntelState = { ...tickerIntelState, quoteBySymbol: { ...bySymbol }, loadedQuotes: loaded };
-        if (rerender && currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+        const shouldPaintThisChunk = loaded === symbols.length || loaded % 100 === 0;
+        if (shouldPaintThisChunk && rerender && currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
       }
     }
 
@@ -1564,6 +1574,7 @@ function applyUniversePreset(preset) {
     universePreset: normalizedPreset,
     universe: nextUniverse,
     selected: nextUniverse.includes(tickerIntelState.selected) ? tickerIntelState.selected : nextUniverse[0],
+    maxVisible: TICKER_DEFAULT_VISIBLE_COUNT,
   };
 }
 
@@ -1700,8 +1711,10 @@ function renderTickerIntelLoading() {
 function renderTickerIntelView() {
   const selected = tickerIntelState.selected || DEFAULT_TICKER_WATCHLIST[0];
   const filtered = getFilteredTickerUniverse();
+  const maxVisible = Math.max(TICKER_DEFAULT_VISIBLE_COUNT, Number(tickerIntelState.maxVisible || TICKER_DEFAULT_VISIBLE_COUNT));
+  const visibleSymbols = filtered.slice(0, maxVisible);
   const counts = getTickerFilterCounts();
-  const watchlistHtml = filtered
+  const watchlistHtml = visibleSymbols
     .map((symbol) => {
       const quote = tickerIntelState.quoteBySymbol[symbol];
       const pct = quote ? getOpenDeltaPercent(quote) : null;
@@ -1878,6 +1891,19 @@ function renderTickerIntelView() {
     </div>
   `;
 
+  const remaining = Math.max(0, filtered.length - visibleSymbols.length);
+  const tickerListFooterHtml = `
+    <div class="settings-desc">Showing ${visibleSymbols.length} of ${filtered.length} symbols</div>
+    ${
+      remaining > 0
+        ? `<button type="button" class="schwab-btn schwab-btn-ghost" id="loadMoreTickerIntelBtn">Load ${Math.min(
+            TICKER_VISIBLE_INCREMENT,
+            remaining
+          )} more</button>`
+        : ""
+    }
+  `;
+
   workspaceTableWrap.innerHTML = `
     <section class="ticker-intel-layout">
       <aside class="ticker-intel-list">
@@ -1940,6 +1966,7 @@ function renderTickerIntelView() {
           <button type="button" class="schwab-btn schwab-btn-ghost" id="refreshTickerUniverseBtn">Refresh Prices</button>
         </div>
         <div class="ticker-items">${watchlistHtml || '<div class="settings-desc">No symbols match the current filters.</div>'}</div>
+        <div class="ticker-list-footer">${tickerListFooterHtml}</div>
       </aside>
       <article class="ticker-intel-report">
         ${rightPaneHtml}
@@ -1991,6 +2018,19 @@ function wireTickerIntelEvents() {
         .catch(() => {
           if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
         });
+    });
+  }
+  const loadMoreBtn = document.getElementById("loadMoreTickerIntelBtn");
+  if (loadMoreBtn) {
+    loadMoreBtn.addEventListener("click", () => {
+      tickerIntelState = {
+        ...tickerIntelState,
+        maxVisible: Number(tickerIntelState.maxVisible || TICKER_DEFAULT_VISIBLE_COUNT) + TICKER_VISIBLE_INCREMENT,
+      };
+      renderTickerIntelView();
+      refreshTickerUniverseQuotes({ rerender: true, force: true }).catch(() => {
+        if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
+      });
     });
   }
   workspaceTableWrap.querySelectorAll("[data-sort-mode]").forEach((btn) => {
