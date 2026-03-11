@@ -25,6 +25,7 @@ const TICKER_REPORT_TTL_MS = Number(process.env.TICKER_REPORT_TTL_MS || 5 * 60 *
 const TICKER_WATCHBOARDS_TTL_MS = Number(process.env.TICKER_WATCHBOARDS_TTL_MS || 3 * 60 * 1000);
 const AGENT_BRIEF_TTL_MS = Number(process.env.AGENT_BRIEF_TTL_MS || 3 * 60 * 1000);
 const SCHWAB_CACHE_TTL_MS = Number(process.env.SCHWAB_CACHE_TTL_MS || 12 * 1000);
+const TICKER_PREWARM_INTERVAL_MS = Number(process.env.TICKER_PREWARM_INTERVAL_MS || 120 * 1000);
 const REDIS_URL = process.env.REDIS_URL || process.env.DO_REDIS_URL || "";
 const REDIS_CACHE_PREFIX = process.env.REDIS_CACHE_PREFIX || "bo:cache:v1";
 
@@ -34,6 +35,8 @@ const marketOverviewCache = { data: null, fetchedAt: 0 };
 const openingPlaybookCache = { data: null, fetchedAt: 0 };
 const tickerWatchboardsCache = { data: null, fetchedAt: 0 };
 const tickerReportCache = new Map();
+const tickerReportInFlight = new Map();
+let tickerPrewarmRunning = false;
 let redisClient = null;
 let redisReady = false;
 const HTTPS_KEEPALIVE_AGENT = new https.Agent({
@@ -566,6 +569,72 @@ function hasTrustedCompanySource(companyProfile) {
   return source && source !== "fallback";
 }
 
+function buildBestEffortCompanyProfile(symbol) {
+  const name = getCompanyLookupName(symbol);
+  return {
+    name,
+    description: "Best-effort AI profile",
+    summary: `${name} is a publicly traded company. AI summary is based on market context and recent headlines.`,
+    source: "best-effort",
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function buildInstantTickerReport(symbol) {
+  const profile = TRUSTED_COMPANY_PROFILE_OVERRIDES[symbol]
+    ? {
+        ...TRUSTED_COMPANY_PROFILE_OVERRIDES[symbol],
+        updatedAt: new Date().toISOString(),
+      }
+    : buildBestEffortCompanyProfile(symbol);
+  return {
+    symbol,
+    signal: "neutral",
+    confidence: "low",
+    overview: profile.summary,
+    bullishFactors: [],
+    bearishFactors: [],
+    neutralFactors: ["Loading full multi-agent analysis..."],
+    catalystWatch: [],
+    riskFlags: ["Full risk analysis is loading."],
+    narrativeSummary: "Preparing full ticker workspace data.",
+    companyProfile: profile,
+    companyExplainer: {
+      bullets: [
+        `What they do: ${profile.name} operates in public markets.`,
+        "How they make money: Revenue depends on their products and services.",
+        "Why investors care: Price can move quickly on earnings and major news.",
+      ],
+      source: "best-effort",
+      asOf: new Date().toISOString(),
+    },
+    agentPanels: {
+      company: [
+        `What they do: ${profile.name} operates in public markets.`,
+        "How they make money: Revenue depends on product and service demand.",
+        "Why investors care: Earnings and headlines can quickly move valuation.",
+      ],
+      catalyst: ["Loading catalyst analysis..."],
+      risk: ["Loading risk analysis..."],
+      source: "instant",
+      asOf: new Date().toISOString(),
+    },
+    gradientSuggestion: {
+      title: "Loading full Gradient plan",
+      bullets: ["Preparing detailed setup guidance..."],
+      confidence: "low",
+      asOf: new Date().toISOString(),
+      source: "instant",
+    },
+    newsUsed: [],
+    quote: null,
+    source: "instant-cache-miss",
+    pending: true,
+    refreshHintMs: 1200,
+    asOf: new Date().toISOString(),
+  };
+}
+
 async function fetchCompanyProfile(symbol, news = []) {
   const safe = normalizeTickerSymbol(symbol);
   if (!safe) return null;
@@ -1080,15 +1149,16 @@ ${JSON.stringify(companyProfile || {}, null, 2)}
 
   try {
     let companyExplainer = null;
-    if (hasTrustedCompanySource(companyProfile)) {
-      try {
-        const explainerRaw = await gradientStructuredJson({
-          completionsUrl,
-          key,
-          model,
-          systemPrompt:
-            "You are a company explainer for beginner investors. Use only provided inputs. Return strict JSON only.",
-          userPrompt: `
+    try {
+      const trusted = hasTrustedCompanySource(companyProfile);
+      const explainerRaw = await gradientStructuredJson({
+        completionsUrl,
+        key,
+        model,
+        systemPrompt: trusted
+          ? "You are a company explainer for beginner investors. Use only provided inputs. Return strict JSON only."
+          : "You are a best-effort company explainer. Infer carefully from name + headlines when profile is limited. Return strict JSON only.",
+        userPrompt: `
 Ticker: ${safeSymbol}
 Structured company input:
 ${JSON.stringify(
@@ -1115,17 +1185,31 @@ Rules:
 - 2-3 bullets only, plain American English.
 - Keep each bullet under 18 words.
 - No markdown, no extra text.
-- If information is insufficient, return {"bullets":[]}.
+${trusted ? '- Use only provided profile + headlines.' : '- If profile is limited, make a best-effort inference from company name and headlines.'}
 `,
-        });
-        companyExplainer = {
-          bullets: sanitizeArray(explainerRaw?.bullets, 3),
-          source: "gradient",
-          asOf: new Date().toISOString(),
-        };
-      } catch {
-        companyExplainer = null;
-      }
+      });
+      const explainerBullets = sanitizeArray(explainerRaw?.bullets, 3);
+      companyExplainer = {
+        bullets: explainerBullets.length
+          ? explainerBullets
+          : [
+              `What they do: ${getCompanyLookupName(safeSymbol)} is a publicly traded company.`,
+              "How they make money: Revenue depends on demand for its main products and services.",
+              "Why investors care: Earnings results and major news can quickly change sentiment.",
+            ],
+        source: trusted ? "gradient-verified" : "gradient-best-effort",
+        asOf: new Date().toISOString(),
+      };
+    } catch {
+      companyExplainer = {
+        bullets: [
+          `What they do: ${getCompanyLookupName(safeSymbol)} is a publicly traded company.`,
+          "How they make money: Revenue depends on demand for its core products and services.",
+          "Why investors care: Earnings and headlines can quickly move the stock.",
+        ],
+        source: "best-effort-fallback",
+        asOf: new Date().toISOString(),
+      };
     }
 
     const [bullRaw, bearRaw, catalystRaw, riskRaw] = await Promise.all([
@@ -2168,27 +2252,72 @@ app.get(["/market/quotes", "/api/market/quotes"], async (req, res) => {
   }
 });
 
+async function refreshTickerReportCache(symbol, { force = false } = {}) {
+  const safeSymbol = normalizeTickerSymbol(symbol);
+  if (!safeSymbol) throw new Error("Ticker symbol is required.");
+  const redisKey = buildRedisCacheKey("ticker-report-v4", safeSymbol);
+
+  if (!force) {
+    const redisCached = await getRedisCacheJson(redisKey);
+    if (redisCached) return redisCached;
+    const cached = tickerReportCache.get(safeSymbol);
+    if (cached && Date.now() - cached.fetchedAt < TICKER_REPORT_TTL_MS) return cached.data;
+  }
+
+  const inFlight = tickerReportInFlight.get(safeSymbol);
+  if (inFlight) return inFlight;
+
+  const work = (async () => {
+    const report = await buildTickerDeepDiveReport(safeSymbol);
+    tickerReportCache.set(safeSymbol, { data: report, fetchedAt: Date.now() });
+    await setRedisCacheJson(redisKey, report, TICKER_REPORT_TTL_MS);
+    return report;
+  })();
+  tickerReportInFlight.set(safeSymbol, work);
+  try {
+    return await work;
+  } finally {
+    tickerReportInFlight.delete(safeSymbol);
+  }
+}
+
+function parseReportAgeMs(report) {
+  const asOf = Date.parse(String(report?.asOf || ""));
+  if (!Number.isFinite(asOf)) return Infinity;
+  return Date.now() - asOf;
+}
+
+function backgroundRefreshTickerReport(symbol) {
+  refreshTickerReportCache(symbol, { force: true }).catch(() => ({}));
+}
+
 app.get(["/market/ticker-report", "/api/market/ticker-report"], async (req, res) => {
   const symbol = normalizeTickerSymbol(req.query.symbol || "");
   if (!symbol) {
     sendJson(res, 400, { error: "symbol query param is required." });
     return;
   }
-  const redisKey = buildRedisCacheKey("ticker-report-v3", symbol);
-  const redisCached = await getRedisCacheJson(redisKey);
+  const force = String(req.query.force || "") === "1";
+  const redisKey = buildRedisCacheKey("ticker-report-v4", symbol);
+  const redisCached = force ? null : await getRedisCacheJson(redisKey);
   if (redisCached) {
+    if (parseReportAgeMs(redisCached) > TICKER_REPORT_TTL_MS / 3) backgroundRefreshTickerReport(symbol);
     sendJson(res, 200, redisCached);
     return;
   }
-  const cached = tickerReportCache.get(symbol);
+  const cached = force ? null : tickerReportCache.get(symbol);
   if (cached && Date.now() - cached.fetchedAt < TICKER_REPORT_TTL_MS) {
+    if (parseReportAgeMs(cached.data) > TICKER_REPORT_TTL_MS / 3) backgroundRefreshTickerReport(symbol);
     sendJson(res, 200, cached.data);
     return;
   }
+  if (!force) {
+    backgroundRefreshTickerReport(symbol);
+    sendJson(res, 200, buildInstantTickerReport(symbol));
+    return;
+  }
   try {
-    const report = await buildTickerDeepDiveReport(symbol);
-    tickerReportCache.set(symbol, { data: report, fetchedAt: Date.now() });
-    await setRedisCacheJson(redisKey, report, TICKER_REPORT_TTL_MS);
+    const report = await refreshTickerReportCache(symbol, { force: true });
     sendJson(res, 200, report);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to build ticker report." });
@@ -2734,8 +2863,25 @@ app.delete(["/schwab/orders/:orderId", "/api/schwab/orders/:orderId"], requireSc
   }
 });
 
+async function prewarmHotTickerReports() {
+  if (tickerPrewarmRunning) return;
+  tickerPrewarmRunning = true;
+  const hotSymbols = FALLBACK_TICKER_UNIVERSE.slice(0, 40);
+  try {
+    for (const symbol of hotSymbols) {
+      await refreshTickerReportCache(symbol, { force: true }).catch(() => ({}));
+    }
+  } finally {
+    tickerPrewarmRunning = false;
+  }
+}
+
 async function startServer() {
   initRedisCache();
+  prewarmHotTickerReports().catch(() => ({}));
+  setInterval(() => {
+    prewarmHotTickerReports().catch(() => ({}));
+  }, TICKER_PREWARM_INTERVAL_MS);
   app.listen(PORT, () => {
     console.log(`API service listening on port ${PORT}`);
   });

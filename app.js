@@ -265,6 +265,7 @@ let tickerReportRequestId = 0;
 let investmentsLoadedAt = 0;
 let openingPlaybookLoadedAt = 0;
 let tickerIntelLiveRefreshTimer = null;
+const tickerReportAutoRefreshTimers = new Map();
 
 function getDoToken() {
   return sessionStorage.getItem(TOKEN_KEY) || "";
@@ -376,7 +377,8 @@ async function loadOpeningPlaybook() {
   return openingPlaybook;
 }
 
-async function loadTickerIntelReport(symbol) {
+async function loadTickerIntelReport(symbol, options = {}) {
+  const { force = false, autoRefresh = true } = options;
   const safeSymbol = String(symbol || "")
     .trim()
     .toUpperCase();
@@ -384,7 +386,7 @@ async function loadTickerIntelReport(symbol) {
 
   const cachedReport = tickerIntelState.reportCache[safeSymbol];
   const cachedAt = Number(tickerIntelState.reportCacheAt[safeSymbol] || 0);
-  if (cachedReport && Date.now() - cachedAt < TICKER_REPORT_TTL_MS) {
+  if (!force && cachedReport && Date.now() - cachedAt < TICKER_REPORT_TTL_MS) {
     tickerIntelState = {
       ...tickerIntelState,
       selected: safeSymbol,
@@ -396,9 +398,12 @@ async function loadTickerIntelReport(symbol) {
   }
 
   const reqId = ++tickerReportRequestId;
-  const data = await schwabApi(`/api/market/ticker-report?symbol=${encodeURIComponent(safeSymbol)}`, {
+  const data = await schwabApi(
+    `/api/market/ticker-report?symbol=${encodeURIComponent(safeSymbol)}${force ? "&force=1" : ""}`,
+    {
     method: "GET",
-  });
+    }
+  );
   if (reqId !== tickerReportRequestId) return data;
 
   tickerIntelState = {
@@ -410,6 +415,22 @@ async function loadTickerIntelReport(symbol) {
     reportCache: { ...tickerIntelState.reportCache, [safeSymbol]: data },
     reportCacheAt: { ...tickerIntelState.reportCacheAt, [safeSymbol]: Date.now() },
   };
+  if (autoRefresh && data?.pending) {
+    const timerId = tickerReportAutoRefreshTimers.get(safeSymbol);
+    if (timerId) clearTimeout(timerId);
+    const refreshInMs = Math.max(700, Number(data?.refreshHintMs || 1200));
+    const nextTimer = setTimeout(() => {
+      tickerReportAutoRefreshTimers.delete(safeSymbol);
+      loadTickerIntelReport(safeSymbol, { force: true, autoRefresh: false })
+        .then(() => {
+          if (currentTab === TICKER_INTEL_TAB && String(tickerIntelState.selected || "").toUpperCase() === safeSymbol) {
+            renderTickerIntelView();
+          }
+        })
+        .catch(() => ({}));
+    }, refreshInMs);
+    tickerReportAutoRefreshTimers.set(safeSymbol, nextTimer);
+  }
   return data;
 }
 
@@ -816,6 +837,8 @@ function stopTickerIntelLiveRefresh() {
     clearInterval(tickerIntelLiveRefreshTimer);
     tickerIntelLiveRefreshTimer = null;
   }
+  tickerReportAutoRefreshTimers.forEach((timerId) => clearTimeout(timerId));
+  tickerReportAutoRefreshTimers.clear();
 }
 
 function startTickerIntelLiveRefresh() {
