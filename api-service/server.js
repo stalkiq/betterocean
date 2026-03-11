@@ -25,12 +25,14 @@ const TICKER_REPORT_TTL_MS = Number(process.env.TICKER_REPORT_TTL_MS || 5 * 60 *
 const TICKER_WATCHBOARDS_TTL_MS = Number(process.env.TICKER_WATCHBOARDS_TTL_MS || 3 * 60 * 1000);
 const AGENT_BRIEF_TTL_MS = Number(process.env.AGENT_BRIEF_TTL_MS || 3 * 60 * 1000);
 const SCHWAB_CACHE_TTL_MS = Number(process.env.SCHWAB_CACHE_TTL_MS || 12 * 1000);
+const SEC_COMPANY_TICKERS_TTL_MS = Number(process.env.SEC_COMPANY_TICKERS_TTL_MS || 24 * 60 * 60 * 1000);
 const TICKER_PREWARM_INTERVAL_MS = Number(process.env.TICKER_PREWARM_INTERVAL_MS || 120 * 1000);
 const REDIS_URL = process.env.REDIS_URL || process.env.DO_REDIS_URL || "";
 const REDIS_CACHE_PREFIX = process.env.REDIS_CACHE_PREFIX || "bo:cache:v1";
 
 const sessionStore = new Map();
 const tickerUniverseCache = { symbols: [], fetchedAt: 0 };
+const secCompanyTickerCache = { bySymbol: {}, fetchedAt: 0 };
 const marketOverviewCache = { data: null, fetchedAt: 0 };
 const openingPlaybookCache = { data: null, fetchedAt: 0 };
 const tickerWatchboardsCache = { data: null, fetchedAt: 0 };
@@ -427,7 +429,7 @@ function postJson(url, requestBody, headers) {
   });
 }
 
-function getText(url) {
+function getText(url, headers = {}) {
   return new Promise((resolve, reject) => {
     const parsedUrl = new URL(url);
     const req = https.request(
@@ -437,6 +439,7 @@ function getText(url) {
         port: parsedUrl.port || 443,
         path: `${parsedUrl.pathname}${parsedUrl.search}`,
         method: "GET",
+        headers,
         agent: HTTPS_KEEPALIVE_AGENT,
       },
       (res) => {
@@ -584,6 +587,66 @@ function trimToWords(value, maxWords = 28) {
 function getCompanyLookupName(symbol) {
   const safe = normalizeTickerSymbol(symbol);
   return SYMBOL_COMPANY_LOOKUP[safe] || safe;
+}
+
+function parseSecCompanyTickerJson(rawData) {
+  const parsed = JSON.parse(String(rawData || "{}"));
+  const bySymbol = {};
+  if (!parsed || typeof parsed !== "object") return bySymbol;
+  Object.values(parsed).forEach((entry) => {
+    const symbol = normalizeTickerSymbol(entry?.ticker || "");
+    const title = String(entry?.title || "").trim();
+    if (!symbol || !title) return;
+    bySymbol[symbol] = title;
+  });
+  return bySymbol;
+}
+
+async function loadSecCompanyTickerMap() {
+  const now = Date.now();
+  if (Object.keys(secCompanyTickerCache.bySymbol).length && now - secCompanyTickerCache.fetchedAt < SEC_COMPANY_TICKERS_TTL_MS) {
+    return secCompanyTickerCache.bySymbol;
+  }
+
+  const redisKey = buildRedisCacheKey("sec-company-tickers-v1");
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached && typeof redisCached.bySymbol === "object" && redisCached.bySymbol !== null) {
+    secCompanyTickerCache.bySymbol = redisCached.bySymbol;
+    secCompanyTickerCache.fetchedAt = now;
+    return secCompanyTickerCache.bySymbol;
+  }
+
+  try {
+    const upstream = await getText("https://www.sec.gov/files/company_tickers.json", {
+      "User-Agent": "BetterOcean/1.0 (support@betterocean.app)",
+      Accept: "application/json",
+    });
+    if (upstream.status < 200 || upstream.status >= 300) {
+      throw new Error(`SEC symbol map request failed (${upstream.status})`);
+    }
+    const bySymbol = parseSecCompanyTickerJson(upstream.data);
+    if (Object.keys(bySymbol).length) {
+      secCompanyTickerCache.bySymbol = bySymbol;
+      secCompanyTickerCache.fetchedAt = now;
+      await setRedisCacheJson(redisKey, { bySymbol, updatedAt: new Date().toISOString() }, SEC_COMPANY_TICKERS_TTL_MS);
+      return bySymbol;
+    }
+  } catch {
+    // Fall through to local lookup fallback.
+  }
+
+  return secCompanyTickerCache.bySymbol;
+}
+
+async function resolveCompanyNamesForSymbols(symbols = []) {
+  const secMap = await loadSecCompanyTickerMap().catch(() => ({}));
+  const out = {};
+  symbols.forEach((symbol) => {
+    const safe = normalizeTickerSymbol(symbol);
+    if (!safe) return;
+    out[safe] = String(secMap?.[safe] || SYMBOL_COMPANY_LOOKUP[safe] || safe).trim();
+  });
+  return out;
 }
 
 function buildBusinessHint(symbol, companyName = "") {
@@ -2260,23 +2323,64 @@ app.get(["/market/quotes", "/api/market/quotes"], async (req, res) => {
   }
 
   try {
+    const resolvedNames = await resolveCompanyNamesForSymbols(symbols);
     const quotes = (
       await Promise.all(
         symbols.map((symbol) =>
           fetchStooqQuote(normalizeTickerForStooq(symbol), symbol).catch(() => null)
         )
       )
-    ).filter(Boolean);
+    )
+      .filter(Boolean)
+      .map((quote) => {
+        const safeSymbol = normalizeTickerSymbol(quote?.symbol || quote?.label || "");
+        const resolved = String(resolvedNames?.[safeSymbol] || quote?.companyName || quote?.label || safeSymbol).trim();
+        return {
+          ...quote,
+          symbol: safeSymbol || quote.symbol,
+          companyName: resolved || safeSymbol || quote.symbol,
+          label: resolved || safeSymbol || quote.symbol,
+        };
+      });
 
-    const bySymbol = Object.fromEntries(quotes.map((quote) => [quote.label.toUpperCase(), quote]));
+    const bySymbol = Object.fromEntries(quotes.map((quote) => [quote.symbol.toUpperCase(), quote]));
     const payload = {
       updatedAt: new Date().toISOString(),
-      quotes: symbols.map((symbol) => bySymbol[symbol] || { symbol, label: symbol, unavailable: true }),
+      quotes: symbols.map((symbol) =>
+        bySymbol[symbol] || {
+          symbol,
+          label: resolvedNames[symbol] || symbol,
+          companyName: resolvedNames[symbol] || symbol,
+          unavailable: true,
+        }
+      ),
     };
     await setRedisCacheJson(redisKey, payload, 15 * 1000);
     sendJson(res, 200, payload);
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to load market quotes." });
+  }
+});
+
+app.get(["/market/company-names", "/api/market/company-names"], async (req, res) => {
+  const symbols = String(req.query.symbols || "")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean)
+    .slice(0, 500);
+  if (!symbols.length) {
+    sendJson(res, 400, { error: "symbols query param is required." });
+    return;
+  }
+  try {
+    const names = await resolveCompanyNamesForSymbols(symbols);
+    sendJson(res, 200, {
+      updatedAt: new Date().toISOString(),
+      source: "sec+ticker-lookup",
+      names,
+    });
+  } catch (err) {
+    sendJson(res, 502, { error: err.message || "Failed to load company names." });
   }
 });
 

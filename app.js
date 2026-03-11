@@ -221,6 +221,7 @@ let tickerIntelState = {
   compareSymbols: [],
   maxVisible: TICKER_DEFAULT_VISIBLE_COUNT,
 };
+let externalCompanyNamesBySymbol = {};
 
 function applyTabTheme(tabName) {
   if (!appShell) return;
@@ -566,6 +567,57 @@ function normalizeCompanyLabel(rawLabel, symbol = "") {
   return raw;
 }
 
+function isResolvedCompanyName(symbol, rawName) {
+  const safeSymbol = String(symbol || "").toUpperCase();
+  const clean = normalizeCompanyLabel(rawName || "", safeSymbol);
+  if (!clean) return false;
+  if (clean.toUpperCase() === safeSymbol) return false;
+  if (/^\w+\s+Company$/i.test(clean)) return false;
+  return true;
+}
+
+async function hydrateCompanyNamesForQuotes(quotes) {
+  const list = Array.isArray(quotes) ? quotes : [];
+  const missing = [...new Set(
+    list
+      .map((quote) => String(quote?.symbol || "").toUpperCase())
+      .filter(Boolean)
+      .filter((symbol) => {
+        if (isResolvedCompanyName(symbol, quoteBySymbolLookup(symbol, list)?.companyName)) return false;
+        if (isResolvedCompanyName(symbol, externalCompanyNamesBySymbol[symbol])) return false;
+        return true;
+      })
+  )];
+  if (missing.length) {
+    try {
+      const payload = await schwabApi(`/api/market/company-names?symbols=${encodeURIComponent(missing.join(","))}`, {
+        method: "GET",
+      });
+      const names = payload && typeof payload.names === "object" ? payload.names : {};
+      externalCompanyNamesBySymbol = { ...externalCompanyNamesBySymbol, ...names };
+    } catch {
+      // Non-fatal: we keep existing fallback naming behavior.
+    }
+  }
+  return list.map((quote) => {
+    const symbol = String(quote?.symbol || "").toUpperCase();
+    if (!symbol) return quote;
+    const external = String(externalCompanyNamesBySymbol[symbol] || "").trim();
+    if (!isResolvedCompanyName(symbol, external)) return quote;
+    if (isResolvedCompanyName(symbol, quote?.companyName || quote?.label || "")) return quote;
+    return {
+      ...quote,
+      companyName: external,
+      label: external,
+    };
+  });
+}
+
+function quoteBySymbolLookup(symbol, list) {
+  const safe = String(symbol || "").toUpperCase();
+  return (Array.isArray(list) ? list : []).find((item) => String(item?.symbol || "").toUpperCase() === safe) || null;
+}
+
 function getCompanyName(symbol, quote = null) {
   const safeSymbol = String(symbol || "").toUpperCase();
   const fromQuote = normalizeCompanyLabel(
@@ -579,6 +631,8 @@ function getCompanyName(symbol, quote = null) {
     safeSymbol
   );
   if (fromQuote) return fromQuote;
+  const fromExternal = normalizeCompanyLabel(externalCompanyNamesBySymbol[safeSymbol] || "", safeSymbol);
+  if (fromExternal) return fromExternal;
   return SYMBOL_COMPANY_NAMES[safeSymbol] || safeSymbol;
 }
 
@@ -778,7 +832,8 @@ async function fetchTickerQuoteBatch(symbols) {
           .map((q) => [q.symbol, q])
       );
 
-      return schwabQuotes.map((q) => (q?.unavailable && publicBySymbol[q.symbol] ? publicBySymbol[q.symbol] : q));
+      const merged = schwabQuotes.map((q) => (q?.unavailable && publicBySymbol[q.symbol] ? publicBySymbol[q.symbol] : q));
+      return hydrateCompanyNamesForQuotes(merged);
     } catch {
       // Fallback to public feed when Schwab quote request fails.
     }
@@ -787,7 +842,8 @@ async function fetchTickerQuoteBatch(symbols) {
   const publicData = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(requested.join(","))}`, {
     method: "GET",
   });
-  return Array.isArray(publicData.quotes) ? publicData.quotes.map((q) => ({ ...q, __source: "public" })) : [];
+  const publicQuotes = Array.isArray(publicData.quotes) ? publicData.quotes.map((q) => ({ ...q, __source: "public" })) : [];
+  return hydrateCompanyNamesForQuotes(publicQuotes);
 }
 
 function getPriceBucket(quote) {
