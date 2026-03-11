@@ -77,8 +77,8 @@ body {
 .app-shell.market-open .table-wrap,
 .app-shell.market-open .ticker-intel-list,
 .app-shell.market-open .ticker-intel-report {
-  border-color: var(--blue-500);
-  box-shadow: 0 0 0 1px rgba(98, 151, 231, 0.26);
+  border-color: #3e8d68;
+  box-shadow: 0 0 0 1px rgba(95, 189, 138, 0.24);
 }
 
 .app-shell.theme-schwab {
@@ -1683,9 +1683,9 @@ max-width: 270px;
 }
 
 .market-state-pill.open {
-  color: #d9edff;
-  border-color: var(--blue-350);
-  background: rgba(83, 140, 219, 0.23);
+  color: #a9f1c9;
+  border-color: #2f8f5c;
+  background: rgba(35, 121, 77, 0.22);
 }
 
 .market-state-pill.closed {
@@ -1713,9 +1713,9 @@ max-width: 270px;
 }
 
 .market-gate-note.open {
-  color: #d5ebff;
-  border-color: var(--blue-450);
-  background: rgba(75, 129, 204, 0.18);
+  color: #a7edc6;
+  border-color: #3d8b62;
+  background: rgba(45, 128, 84, 0.16);
 }
 
 .market-gate-note.closed {
