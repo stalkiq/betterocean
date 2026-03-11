@@ -102,6 +102,29 @@ const FALLBACK_TICKER_UNIVERSE = [
   "XLY",
   "XLV",
 ];
+const SYMBOL_COMPANY_LOOKUP = {
+  AAPL: "Apple Inc.",
+  MSFT: "Microsoft",
+  NVDA: "Nvidia",
+  AMZN: "Amazon",
+  GOOGL: "Google",
+  META: "Meta Platforms",
+  TSLA: "Tesla, Inc.",
+  JPM: "JPMorgan Chase",
+  XOM: "ExxonMobil",
+  UNH: "UnitedHealth Group",
+  MMM: "3M",
+  ABT: "Abbott Laboratories",
+  ABBV: "AbbVie",
+  ACN: "Accenture",
+  AVGO: "Broadcom Inc.",
+  DAL: "Delta Air Lines",
+  CCL: "Carnival Corporation",
+  HAL: "Halliburton",
+  PH: "Parker-Hannifin",
+  CSCO: "Cisco",
+  ORCL: "Oracle Corporation",
+};
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -482,6 +505,56 @@ function stripHtml(value) {
   return decodeHtmlEntities(String(value || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim());
 }
 
+function trimToWords(value, maxWords = 28) {
+  const words = String(value || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!words.length) return "";
+  if (words.length <= maxWords) return words.join(" ");
+  return `${words.slice(0, maxWords).join(" ")}...`;
+}
+
+function getCompanyLookupName(symbol) {
+  const safe = normalizeTickerSymbol(symbol);
+  return SYMBOL_COMPANY_LOOKUP[safe] || safe;
+}
+
+async function fetchCompanyProfile(symbol, news = []) {
+  const safe = normalizeTickerSymbol(symbol);
+  if (!safe) return null;
+  const candidates = [getCompanyLookupName(safe)];
+  const firstNewsTitle = String(news?.[0]?.title || "").trim();
+  const fromNews = firstNewsTitle
+    .replace(/\(.*?\)/g, "")
+    .split(/[-|:]/)[0]
+    .replace(/\bstock\b/gi, "")
+    .trim();
+  if (fromNews && fromNews.length > 2) candidates.push(fromNews);
+
+  for (const candidate of [...new Set(candidates)]) {
+    const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(candidate)}`;
+    try {
+      const upstream = await getText(url);
+      if (upstream.status < 200 || upstream.status >= 300) continue;
+      const data = JSON.parse(String(upstream.data || "{}"));
+      const title = String(data?.title || "").trim();
+      const summary = trimToWords(data?.extract || "", 40);
+      if (!title || !summary) continue;
+      return {
+        name: title,
+        description: String(data?.description || "").trim(),
+        summary,
+        source: "wikipedia",
+        updatedAt: new Date().toISOString(),
+      };
+    } catch {
+      // Try next candidate.
+    }
+  }
+  return null;
+}
+
 function parseSimpleRss(xmlText) {
   const xml = String(xmlText || "");
   const itemMatches = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
@@ -584,7 +657,7 @@ async function loadSp500TickerUniverse(limit = 500) {
   return unique;
 }
 
-function buildTickerReportFallback(symbol, quote, news) {
+function buildTickerReportFallback(symbol, quote, news, companyProfile = null) {
   const open = Number(quote?.open || 0);
   const close = Number(quote?.close || 0);
   const deltaPct =
@@ -601,8 +674,7 @@ function buildTickerReportFallback(symbol, quote, news) {
     symbol,
     signal,
     confidence: "medium",
-    overview:
-      "AI deep-dive unavailable. This fallback view uses current market pricing and recent headlines only; treat as directional context, not investment advice.",
+    overview: companyProfile?.summary || "Verified company profile is temporarily unavailable for this symbol.",
     bullishFactors:
       signal === "bullish"
         ? ["Price is trading above today's open, suggesting positive session momentum."]
@@ -615,6 +687,37 @@ function buildTickerReportFallback(symbol, quote, news) {
     catalystWatch: ["Earnings updates", "Guidance changes", "Executive leadership headlines", "New partnerships or M&A"],
     riskFlags: ["Headline volatility can reverse intraday direction quickly."],
     narrativeSummary: "Combine this with your own risk controls and position sizing.",
+    companyProfile: companyProfile || {
+      name: getCompanyLookupName(symbol),
+      description: "",
+      summary: "Verified company profile unavailable right now.",
+      source: "fallback",
+      updatedAt: new Date().toISOString(),
+    },
+    gradientSuggestion: {
+      title: signal === "bullish" ? "Lean positive with risk controls" : signal === "bearish" ? "Stay defensive for now" : "Wait for confirmation",
+      bullets:
+        signal === "bullish"
+          ? [
+              "Watch for follow-through above the opening range.",
+              "Size small and define a stop before entry.",
+              "Avoid chasing if momentum fades intraday.",
+            ]
+          : signal === "bearish"
+            ? [
+                "Avoid forcing long entries into current weakness.",
+                "Wait for stabilization before taking new risk.",
+                "Use tighter risk limits in high headline volatility.",
+              ]
+            : [
+                "Wait for a cleaner directional signal.",
+                "Track volume confirmation before acting.",
+                "Keep position size conservative until trend forms.",
+              ],
+      confidence: "low",
+      asOf: new Date().toISOString(),
+      source: "fallback",
+    },
     debate: {
       bullAnalyst: {
         thesis: "Upside case is limited without stronger confirmation.",
@@ -841,11 +944,12 @@ async function buildTickerDeepDiveReport(symbol) {
     fetchStooqQuote(normalizeTickerForStooq(safeSymbol), safeSymbol).catch(() => null),
     fetchTickerNews(safeSymbol, 8).catch(() => []),
   ]);
+  const companyProfile = await fetchCompanyProfile(safeSymbol, news).catch(() => null);
 
   const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
   const key = process.env.GRADIENT_AGENT_KEY;
   if (!endpoint || !key) {
-    return buildTickerReportFallback(safeSymbol, quote, news);
+    return buildTickerReportFallback(safeSymbol, quote, news, companyProfile);
   }
 
   const base = endpoint.replace(/\/+$/, "");
@@ -858,6 +962,9 @@ ${JSON.stringify(quote || {}, null, 2)}
 
 Recent news JSON:
 ${JSON.stringify(news, null, 2)}
+
+Company profile JSON:
+${JSON.stringify(companyProfile || {}, null, 2)}
 `;
 
   try {
@@ -946,7 +1053,9 @@ Return STRICT JSON:
   "riskFlags": ["string", "string"],
   "narrativeSummary": "1-2 sentence summary",
   "verdict": "1 sentence final call",
-  "actionBias": "lean-bullish|lean-bearish|balanced"
+  "actionBias": "lean-bullish|lean-bearish|balanced",
+  "suggestionTitle": "short recommendation title",
+  "suggestionBullets": ["string", "string", "string"]
 }
 
 Rules:
@@ -966,6 +1075,20 @@ Rules:
       catalystWatch: sanitizeArray(refereeRaw?.catalystWatch, 6),
       riskFlags: sanitizeArray(refereeRaw?.riskFlags, 6),
       narrativeSummary: String(refereeRaw?.narrativeSummary || "").trim(),
+      companyProfile: companyProfile || {
+        name: getCompanyLookupName(safeSymbol),
+        description: "",
+        summary: "Verified company profile unavailable right now.",
+        source: "fallback",
+        updatedAt: new Date().toISOString(),
+      },
+      gradientSuggestion: {
+        title: String(refereeRaw?.suggestionTitle || "Risk-managed setup").trim() || "Risk-managed setup",
+        bullets: sanitizeArray(refereeRaw?.suggestionBullets, 4),
+        confidence: sanitizeConfidence(refereeRaw?.confidence, "medium"),
+        asOf: new Date().toISOString(),
+        source: "gradient",
+      },
       debate: {
         bullAnalyst,
         bearAnalyst,
@@ -987,7 +1110,7 @@ Rules:
       asOf: new Date().toISOString(),
     };
   } catch {
-    return buildTickerReportFallback(safeSymbol, quote, news);
+    return buildTickerReportFallback(safeSymbol, quote, news, companyProfile);
   }
 }
 

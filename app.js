@@ -1233,26 +1233,29 @@ function getMarketCapBucket(symbol, quote) {
     if (["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH", "SPY", "QQQ"].includes(safeSymbol)) {
       return "Large cap";
     }
-    return "Unknown cap";
+    return null;
   }
   if (marketCap >= 200_000_000_000) return "Large cap";
   if (marketCap >= 10_000_000_000) return "Mid cap";
   return "Small cap";
 }
 
-function getCompanyTypeLabel(symbol, quote) {
+function getCompanyTypeLabel(symbol, quote, report = null) {
   const safeSymbol = String(symbol || "").toUpperCase();
   if (ETF_SYMBOLS.includes(safeSymbol)) return "ETF";
+  const profileDescription = normalizeCompanyLabel(report?.companyProfile?.description || "", "");
+  if (profileDescription) return profileDescription;
   const fromQuote = normalizeCompanyLabel(quote?.sector || "", "");
   if (fromQuote) return fromQuote;
-  return SYMBOL_SECTOR_HINTS[safeSymbol] || "Public company";
+  return SYMBOL_SECTOR_HINTS[safeSymbol] || "";
 }
 
-function toPlainCompanySnapshot(symbol, quote) {
-  const note = String(getCompanySuccessNote(symbol) || "").trim();
-  if (!note) return "Public company with broad market coverage.";
-  const words = note.split(/\s+/).slice(0, 10);
-  return words.join(" ") + (words.length >= 10 ? "..." : "");
+function toPlainCompanySnapshot(symbol, quote, report = null) {
+  const fromProfile = String(report?.companyProfile?.summary || "").trim();
+  if (fromProfile) return fromProfile;
+  const fromOverview = String(report?.overview || "").trim();
+  if (fromOverview) return fromOverview;
+  return "Open ticker for verified company brief.";
 }
 
 function getTickerCatalystTags(symbol, report, quote) {
@@ -1717,26 +1720,27 @@ function renderTickerIntelView() {
   const watchlistHtml = visibleSymbols
     .map((symbol) => {
       const quote = tickerIntelState.quoteBySymbol[symbol];
+      const report = tickerIntelState.reportCache[symbol] || null;
       const pct = quote ? getOpenDeltaPercent(quote) : null;
       const companyLine = getTickerCardCompanyLine(symbol, quote);
       const signal = getSignalFromDelta(pct);
       const livePulseClass = getTickerPulseClass(symbol);
-      const companyType = getCompanyTypeLabel(symbol, quote);
+      const companyType = getCompanyTypeLabel(symbol, quote, report);
       const marketCapBucket = getMarketCapBucket(symbol, quote);
-      const snapshot = toPlainCompanySnapshot(symbol, quote);
-      const report = tickerIntelState.reportCache[symbol] || null;
+      const snapshot = toPlainCompanySnapshot(symbol, quote, report);
       const catalysts = getTickerCatalystTags(symbol, report, quote);
       const dataQuality = getDataQualityLabel(quote);
       const isCompared = Array.isArray(tickerIntelState.compareSymbols)
         ? tickerIntelState.compareSymbols.includes(symbol)
         : false;
+      const companyMetaLine = [companyType, marketCapBucket].filter(Boolean).join(" - ");
       return `
       <div class="ticker-item ${symbol === selected ? "active" : ""} ${livePulseClass}" data-ticker="${symbol}" role="button" tabindex="0">
         <span class="ticker-item-top">
           <span class="ticker-item-symbol">${symbol} - ${escapeHtml(companyLine)}</span>
           <span>${escapeHtml(signal.label)}</span>
         </span>
-        <span class="ticker-item-company">${escapeHtml(companyType)} - ${escapeHtml(marketCapBucket)}</span>
+        ${companyMetaLine ? `<span class="ticker-item-company">${escapeHtml(companyMetaLine)}</span>` : ""}
         <span class="ticker-item-snapshot">${escapeHtml(snapshot)}</span>
         <span class="ticker-meta-inline">
           ${catalysts.map((tag) => `<span class="ticker-catalyst-chip">${escapeHtml(tag)}</span>`).join("")}
@@ -1774,7 +1778,7 @@ function renderTickerIntelView() {
 
   const selectedQuote = tickerIntelState.quoteBySymbol[selected];
   const selectedCompany = getCompanyName(selected, selectedQuote);
-  const selectedCompanyType = getCompanyTypeLabel(selected, selectedQuote);
+  const selectedCompanyType = getCompanyTypeLabel(selected, selectedQuote, tickerIntelState.reportCache[selected] || null);
   const selectedDataQuality = getDataQualityLabel(selectedQuote);
   const selectedMarketCap = getMarketCapBucket(selected, selectedQuote);
   const selectedPct = selectedQuote ? getOpenDeltaPercent(selectedQuote) : null;
@@ -1782,8 +1786,14 @@ function renderTickerIntelView() {
   const reportLoading = tickerIntelState.loading && tickerIntelState.selected === selected;
   const reportError = tickerIntelState.error || "";
   const companyExplainer = String(
-    selectedReport?.overview || selectedReport?.narrativeSummary || getCompanySuccessNote(selected)
+    selectedReport?.companyProfile?.summary ||
+      selectedReport?.overview ||
+      selectedReport?.narrativeSummary ||
+      "Verified company profile unavailable right now."
   ).trim();
+  const profileSource = String(selectedReport?.companyProfile?.source || "unverified").trim();
+  const profileUpdatedAt = String(selectedReport?.companyProfile?.updatedAt || selectedReport?.asOf || "").trim();
+  const gradientSuggestion = selectedReport?.gradientSuggestion || null;
   const whyToday = [
     ...(Array.isArray(selectedReport?.catalystWatch) ? selectedReport.catalystWatch.slice(0, 2) : []),
     ...(Array.isArray(selectedReport?.bullishFactors) ? selectedReport.bullishFactors.slice(0, 1) : []),
@@ -1829,17 +1839,30 @@ function renderTickerIntelView() {
     })
     .join("");
   const rightPaneHtml = `
-    <div class="schwab-card">
-      <h3>Ticker Workspace</h3>
-      <p class="schwab-card-sub">Market Coverage stays on the left. Click a ticker to update these details.</p>
-      <div class="trade-readiness-grid">
+    <section class="ticker-workspace-modern">
+      <div class="ticker-workspace-header">
+        <div>
+          <h3>Ticker Workspace</h3>
+          <p class="schwab-card-sub">Market Coverage stays on the left. Click a ticker to update these details.</p>
+        </div>
+        <div class="ticker-source-badges">
+          <span class="ticker-catalyst-chip">Profile: ${escapeHtml(profileSource || "unverified")}</span>
+          <span class="ticker-catalyst-chip">Updated: ${escapeHtml(profileUpdatedAt ? formatNewsTime(profileUpdatedAt) : "n/a")}</span>
+        </div>
+      </div>
+      <div class="trade-readiness-grid ticker-modern-stats">
         <div><span>Selected ticker</span><strong>${escapeHtml(selected)}</strong></div>
         <div><span>Company</span><strong>${escapeHtml(selectedCompany)}</strong></div>
-        <div><span>Company type</span><strong>${escapeHtml(selectedCompanyType)}</strong></div>
-        <div><span>Market cap</span><strong>${escapeHtml(selectedMarketCap)}</strong></div>
+        ${selectedCompanyType ? `<div><span>Company type</span><strong>${escapeHtml(selectedCompanyType)}</strong></div>` : ""}
+        ${selectedMarketCap ? `<div><span>Market cap</span><strong>${escapeHtml(selectedMarketCap)}</strong></div>` : ""}
         <div><span>Price</span><strong>${selectedQuote ? renderPriceCell(selectedQuote.close) : "-"}</strong></div>
         <div><span>Today</span><strong>${formatPercent(selectedPct)}</strong></div>
         <div><span>Data quality</span><strong>${escapeHtml(selectedDataQuality)}</strong></div>
+        <div><span>Open / High / Low</span><strong>${
+          selectedQuote
+            ? `${renderPriceCell(selectedQuote.open)} / ${renderPriceCell(selectedQuote.high)} / ${renderPriceCell(selectedQuote.low)}`
+            : "-"
+        }</strong></div>
       </div>
       ${
         reportLoading
@@ -1848,10 +1871,23 @@ function renderTickerIntelView() {
             ? `<div class="do-error"><strong>AI report issue</strong><p>${escapeHtml(reportError)}</p></div>`
             : ""
       }
-      <section class="schwab-grid">
+      ${
+        gradientSuggestion
+          ? `<article class="schwab-card ticker-gradient-brief">
+              <h4>Gradient suggestion</h4>
+              <p class="schwab-card-sub"><strong>${escapeHtml(gradientSuggestion?.title || "Risk-managed setup")}</strong></p>
+              <ul class="ticker-bullets">
+                ${(Array.isArray(gradientSuggestion?.bullets) ? gradientSuggestion.bullets.slice(0, 3) : ["No suggestion available yet."])
+                  .map((line) => `<li>${escapeHtml(line)}</li>`)
+                  .join("")}
+              </ul>
+            </article>`
+          : ""
+      }
+      <section class="schwab-grid ticker-workspace-grid">
         <article class="schwab-card">
           <h4>What this company does</h4>
-          <p class="schwab-card-sub">${escapeHtml(companyExplainer || getCompanySuccessNote(selected))}</p>
+          <p class="schwab-card-sub">${escapeHtml(companyExplainer)}</p>
         </article>
         <article class="schwab-card">
           <h4>Why today could move this ticker</h4>
@@ -1888,7 +1924,7 @@ function renderTickerIntelView() {
             : '<p class="schwab-card-sub">Tap Compare on ticker cards to build a quick side-by-side view.</p>'
         }
       </section>
-    </div>
+    </section>
   `;
 
   const remaining = Math.max(0, filtered.length - visibleSymbols.length);
