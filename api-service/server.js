@@ -520,6 +520,14 @@ function getCompanyLookupName(symbol) {
   return SYMBOL_COMPANY_LOOKUP[safe] || safe;
 }
 
+function hasTrustedCompanySource(companyProfile) {
+  if (!companyProfile || typeof companyProfile !== "object") return false;
+  const source = String(companyProfile.source || "").toLowerCase();
+  const summary = String(companyProfile.summary || "").trim();
+  if (!summary || /unavailable/i.test(summary)) return false;
+  return source && source !== "fallback";
+}
+
 async function fetchCompanyProfile(symbol, news = []) {
   const safe = normalizeTickerSymbol(symbol);
   if (!safe) return null;
@@ -718,6 +726,7 @@ function buildTickerReportFallback(symbol, quote, news, companyProfile = null) {
       asOf: new Date().toISOString(),
       source: "fallback",
     },
+    companyExplainer: null,
     debate: {
       bullAnalyst: {
         thesis: "Upside case is limited without stronger confirmation.",
@@ -968,6 +977,55 @@ ${JSON.stringify(companyProfile || {}, null, 2)}
 `;
 
   try {
+    let companyExplainer = null;
+    if (hasTrustedCompanySource(companyProfile)) {
+      try {
+        const explainerRaw = await gradientStructuredJson({
+          completionsUrl,
+          key,
+          model,
+          systemPrompt:
+            "You are a company explainer for beginner investors. Use only provided inputs. Return strict JSON only.",
+          userPrompt: `
+Ticker: ${safeSymbol}
+Structured company input:
+${JSON.stringify(
+  {
+    name: companyProfile?.name || getCompanyLookupName(safeSymbol),
+    sector: companyProfile?.description || "",
+    products: companyProfile?.summary || "",
+    latestFilingsOrNews: Array.isArray(news) ? news.slice(0, 5).map((item) => item?.title || "").filter(Boolean) : [],
+  },
+  null,
+  2
+)}
+
+Return STRICT JSON:
+{
+  "bullets": [
+    "What they do: ...",
+    "How they make money: ...",
+    "Why investors care: ..."
+  ]
+}
+
+Rules:
+- 2-3 bullets only, plain American English.
+- Keep each bullet under 18 words.
+- No markdown, no extra text.
+- If information is insufficient, return {"bullets":[]}.
+`,
+        });
+        companyExplainer = {
+          bullets: sanitizeArray(explainerRaw?.bullets, 3),
+          source: "gradient",
+          asOf: new Date().toISOString(),
+        };
+      } catch {
+        companyExplainer = null;
+      }
+    }
+
     const [bullRaw, bearRaw] = await Promise.all([
       gradientStructuredJson({
         completionsUrl,
@@ -1082,6 +1140,7 @@ Rules:
         source: "fallback",
         updatedAt: new Date().toISOString(),
       },
+      companyExplainer,
       gradientSuggestion: {
         title: String(refereeRaw?.suggestionTitle || "Risk-managed setup").trim() || "Risk-managed setup",
         bullets: sanitizeArray(refereeRaw?.suggestionBullets, 4),

@@ -1811,6 +1811,9 @@ function renderTickerIntelView() {
   const profileSource = String(selectedReport?.companyProfile?.source || "unverified").trim();
   const profileUpdatedAt = String(selectedReport?.companyProfile?.updatedAt || selectedReport?.asOf || "").trim();
   const gradientSuggestion = selectedReport?.gradientSuggestion || null;
+  const companyExplainerBullets = Array.isArray(selectedReport?.companyExplainer?.bullets)
+    ? selectedReport.companyExplainer.bullets.filter(Boolean).slice(0, 3)
+    : [];
   const whyToday = [
     ...(Array.isArray(selectedReport?.catalystWatch) ? selectedReport.catalystWatch.slice(0, 2) : []),
     ...(Array.isArray(selectedReport?.bullishFactors) ? selectedReport.bullishFactors.slice(0, 1) : []),
@@ -1904,7 +1907,13 @@ function renderTickerIntelView() {
       <section class="schwab-grid ticker-workspace-grid">
         <article class="schwab-card">
           <h4>What this company does</h4>
-          <p class="schwab-card-sub">${escapeHtml(companyExplainer)}</p>
+          ${
+            companyExplainerBullets.length
+              ? `<ul class="ticker-bullets">
+                  ${companyExplainerBullets.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
+                </ul>`
+              : `<p class="schwab-card-sub">${escapeHtml(companyExplainer)}</p>`
+          }
         </article>
         <article class="schwab-card">
           <h4>Why today could move this ticker</h4>
