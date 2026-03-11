@@ -657,9 +657,52 @@ function normalizeUnifiedQuote(input, symbolHint = "") {
         "",
       ""
     ) || "";
+  const bid = toFiniteNumber(quote?.bidPrice, quote?.bid, input?.bid);
+  const ask = toFiniteNumber(quote?.askPrice, quote?.ask, input?.ask);
+  const previousClose = toFiniteNumber(quote?.previousClosePrice, quote?.previousClose, input?.previousClose);
+  const vwap = toFiniteNumber(quote?.vwap, quote?.vwap, input?.vwap);
+  const week52High = toFiniteNumber(
+    quote?.week52High,
+    quote?.fiftyTwoWeekHigh,
+    quote?.high52,
+    quote?.yearHigh,
+    input?.week52High,
+    input?.fiftyTwoWeekHigh
+  );
+  const week52Low = toFiniteNumber(
+    quote?.week52Low,
+    quote?.fiftyTwoWeekLow,
+    quote?.low52,
+    quote?.yearLow,
+    input?.week52Low,
+    input?.fiftyTwoWeekLow
+  );
+  const tradeTime =
+    input?.quoteTime ||
+    input?.tradeTime ||
+    quote?.quoteTime ||
+    quote?.tradeTime ||
+    quote?.lastTradeTime ||
+    null;
   const dataSource = String(input?.__source || input?.source || "unknown").toLowerCase();
   if (!Number.isFinite(close) || close <= 0) {
-    return { symbol, label: companyName, companyName, unavailable: true, volume: null, marketCap: null, sector, dataSource };
+    return {
+      symbol,
+      label: companyName,
+      companyName,
+      unavailable: true,
+      volume: null,
+      marketCap: null,
+      sector,
+      bid: Number.isFinite(bid) ? bid : null,
+      ask: Number.isFinite(ask) ? ask : null,
+      previousClose: Number.isFinite(previousClose) ? previousClose : null,
+      vwap: Number.isFinite(vwap) ? vwap : null,
+      week52High: Number.isFinite(week52High) ? week52High : null,
+      week52Low: Number.isFinite(week52Low) ? week52Low : null,
+      tradeTime,
+      dataSource,
+    };
   }
 
   const safeOpen = Number.isFinite(open) && open > 0 ? open : close;
@@ -677,6 +720,13 @@ function normalizeUnifiedQuote(input, symbolHint = "") {
     volume: Number.isFinite(volume) ? volume : null,
     marketCap: Number.isFinite(marketCap) ? marketCap : null,
     sector,
+    bid: Number.isFinite(bid) ? bid : null,
+    ask: Number.isFinite(ask) ? ask : null,
+    previousClose: Number.isFinite(previousClose) ? previousClose : null,
+    vwap: Number.isFinite(vwap) ? vwap : null,
+    week52High: Number.isFinite(week52High) ? week52High : null,
+    week52Low: Number.isFinite(week52Low) ? week52Low : null,
+    tradeTime,
     dataSource,
   };
 }
@@ -1347,6 +1397,61 @@ function getDataQualityLabel(quote) {
   return "Fallback";
 }
 
+function getTickerDataSourceLabel(quote) {
+  const src = String(quote?.dataSource || "").toLowerCase();
+  if (src === "schwab") return "Schwab API";
+  if (src === "public") return "Public feed";
+  return "Fallback feed";
+}
+
+function formatCompactNumber(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "-";
+  return new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(n);
+}
+
+function getQuoteFieldCoverage(quote) {
+  const checks = [
+    { key: "close", label: "last" },
+    { key: "open", label: "open" },
+    { key: "high", label: "high" },
+    { key: "low", label: "low" },
+    { key: "volume", label: "volume" },
+    { key: "bid", label: "bid" },
+    { key: "ask", label: "ask" },
+    { key: "vwap", label: "vwap" },
+    { key: "previousClose", label: "prev close" },
+  ];
+  const present = checks.filter((item) => Number.isFinite(Number(quote?.[item.key])));
+  const missing = checks.filter((item) => !Number.isFinite(Number(quote?.[item.key]))).map((item) => item.label);
+  const score = Math.round((present.length / checks.length) * 100);
+  return { score, missing };
+}
+
+function getAiConfidenceScore(report) {
+  const c = String(report?.confidence || "").toLowerCase();
+  if (c === "high") return 85;
+  if (c === "medium") return 68;
+  if (c === "low") return 45;
+  return 35;
+}
+
+function getGradientNowNext(report, quote) {
+  const pct = getOpenDeltaPercent(quote);
+  const topHeadline = String(report?.newsUsed?.[0]?.title || "").trim();
+  const catalyst = String(
+    (Array.isArray(report?.catalystWatch) && report.catalystWatch[0]) ||
+      (Array.isArray(report?.gradientSuggestion?.bullets) && report.gradientSuggestion.bullets[0]) ||
+      ""
+  ).trim();
+  const nowBase = Number.isFinite(pct)
+    ? `Price is ${formatPercent(pct)} vs open with ${formatCompactNumber(quote?.volume)} volume.`
+    : "Price move is still unclear right now.";
+  const now = topHeadline ? `${nowBase} Headline: ${topHeadline}` : nowBase;
+  const next = catalyst || "Watch for a clear break of today's range before adding risk.";
+  return { now, next };
+}
+
 function getNewsNoiseScore(symbol) {
   const report = tickerIntelState.reportCache[symbol];
   const headlines = Array.isArray(report?.newsUsed) ? report.newsUsed : [];
@@ -1836,6 +1941,7 @@ function renderTickerIntelView() {
   const selectedCompany = getCompanyName(selected, selectedQuote);
   const selectedCompanyType = getCompanyTypeLabel(selected, selectedQuote, tickerIntelState.reportCache[selected] || null);
   const selectedDataQuality = getDataQualityLabel(selectedQuote);
+  const selectedSourceLabel = getTickerDataSourceLabel(selectedQuote);
   const selectedMarketCap = getMarketCapBucket(selected, selectedQuote);
   const selectedPct = selectedQuote ? getOpenDeltaPercent(selectedQuote) : null;
   const selectedReport = tickerIntelState.reportCache[selected] || null;
@@ -1849,6 +1955,16 @@ function renderTickerIntelView() {
   ).trim();
   const profileSource = String(selectedReport?.companyProfile?.source || "gradient-best-effort").trim();
   const profileUpdatedAt = String(selectedReport?.companyProfile?.updatedAt || selectedReport?.asOf || "").trim();
+  const quoteUpdatedAt = tickerIntelState.quotesUpdatedAt ? formatNewsTime(tickerIntelState.quotesUpdatedAt) : "n/a";
+  const marketStatusText = isUsMarketOpenNow() ? "Market Open" : "Market Closed";
+  const spreadValue =
+    Number.isFinite(Number(selectedQuote?.bid)) && Number.isFinite(Number(selectedQuote?.ask))
+      ? Number(selectedQuote.ask) - Number(selectedQuote.bid)
+      : null;
+  const fieldCoverage = getQuoteFieldCoverage(selectedQuote);
+  const aiConfidenceScore = getAiConfidenceScore(selectedReport);
+  const nowNext = getGradientNowNext(selectedReport, selectedQuote);
+  const missingTapeFields = fieldCoverage.missing.length ? fieldCoverage.missing.slice(0, 4).join(", ") : "";
   const gradientSuggestion = selectedReport?.gradientSuggestion || null;
   const companyExplainerBullets = Array.isArray(selectedReport?.companyExplainer?.bullets)
     ? selectedReport.companyExplainer.bullets.filter(Boolean).slice(0, 3)
@@ -1913,20 +2029,46 @@ function renderTickerIntelView() {
           <span class="ticker-catalyst-chip">Updated: ${escapeHtml(profileUpdatedAt ? formatNewsTime(profileUpdatedAt) : "n/a")}</span>
         </div>
       </div>
-      <div class="trade-readiness-grid ticker-modern-stats">
-        <div><span>Selected ticker</span><strong>${escapeHtml(selected)}</strong></div>
-        <div><span>Company</span><strong>${escapeHtml(selectedCompany)}</strong></div>
-        ${selectedCompanyType ? `<div><span>Company type</span><strong>${escapeHtml(selectedCompanyType)}</strong></div>` : ""}
-        ${selectedMarketCap ? `<div><span>Market cap</span><strong>${escapeHtml(selectedMarketCap)}</strong></div>` : ""}
-        <div><span>Price</span><strong>${selectedQuote ? renderPriceCell(selectedQuote.close) : "-"}</strong></div>
-        <div><span>Today</span><strong>${formatPercent(selectedPct)}</strong></div>
-        <div><span>Data quality</span><strong>${escapeHtml(selectedDataQuality)}</strong></div>
-        <div><span>Open / High / Low</span><strong>${
-          selectedQuote
-            ? `${renderPriceCell(selectedQuote.open)} / ${renderPriceCell(selectedQuote.high)} / ${renderPriceCell(selectedQuote.low)}`
-            : "-"
-        }</strong></div>
-      </div>
+      <article class="schwab-card ticker-snapshot-card">
+        <div class="ticker-snapshot-head">
+          <h4>Live ticker snapshot</h4>
+          <div class="ticker-source-badges">
+            <span class="ticker-catalyst-chip">${escapeHtml(marketStatusText)}</span>
+            <span class="ticker-catalyst-chip">${escapeHtml(selectedSourceLabel)} • ${escapeHtml(selectedDataQuality)}</span>
+            <span class="ticker-catalyst-chip">Updated: ${escapeHtml(quoteUpdatedAt)}</span>
+          </div>
+        </div>
+        <div class="ticker-snapshot-grid">
+          <div class="ticker-snapshot-pane">
+            <div><span>Symbol</span><strong>${escapeHtml(selected)}</strong></div>
+            <div><span>Company</span><strong>${escapeHtml(selectedCompany)}</strong></div>
+            ${selectedCompanyType ? `<div><span>Type</span><strong>${escapeHtml(selectedCompanyType)}</strong></div>` : ""}
+            ${selectedMarketCap ? `<div><span>Market cap</span><strong>${escapeHtml(selectedMarketCap)}</strong></div>` : ""}
+            <div><span>Last / Today</span><strong>${selectedQuote ? renderPriceCell(selectedQuote.close) : "-"} • ${formatPercent(selectedPct)}</strong></div>
+            <div><span>Bid / Ask</span><strong>${renderPriceCell(selectedQuote?.bid)} / ${renderPriceCell(selectedQuote?.ask)}</strong></div>
+            <div><span>Spread</span><strong>${Number.isFinite(spreadValue) ? renderPriceCell(spreadValue) : "-"}</strong></div>
+          </div>
+          <div class="ticker-snapshot-pane">
+            <div><span>Open / High / Low</span><strong>${
+              selectedQuote
+                ? `${renderPriceCell(selectedQuote.open)} / ${renderPriceCell(selectedQuote.high)} / ${renderPriceCell(selectedQuote.low)}`
+                : "-"
+            }</strong></div>
+            <div><span>Prev close</span><strong>${renderPriceCell(selectedQuote?.previousClose)}</strong></div>
+            <div><span>VWAP</span><strong>${renderPriceCell(selectedQuote?.vwap)}</strong></div>
+            <div><span>Volume</span><strong>${formatCompactNumber(selectedQuote?.volume)}</strong></div>
+            <div><span>52W range</span><strong>${renderPriceCell(selectedQuote?.week52Low)} - ${renderPriceCell(selectedQuote?.week52High)}</strong></div>
+            <div><span>Range position</span><strong>${renderPriceLocationBar(selectedQuote)}</strong></div>
+          </div>
+          <div class="ticker-snapshot-pane">
+            <div><span>Gradient now</span><strong>${escapeHtml(nowNext.now)}</strong></div>
+            <div><span>Gradient next</span><strong>${escapeHtml(nowNext.next)}</strong></div>
+            <div><span>Data quality score</span><strong>${fieldCoverage.score}/100</strong></div>
+            <div><span>AI confidence score</span><strong>${aiConfidenceScore}/100</strong></div>
+            <div><span>Missing fields</span><strong>${escapeHtml(missingTapeFields || "None")}</strong></div>
+          </div>
+        </div>
+      </article>
       ${
         reportLoading
           ? '<div class="do-loading">Building AI explainer and news impact view...</div>'
