@@ -1311,7 +1311,7 @@ function toPlainCompanySnapshot(symbol, quote, report = null) {
   if (fromProfile) return fromProfile;
   const fromOverview = String(report?.overview || "").trim();
   if (fromOverview) return fromOverview;
-  return "Open ticker for verified company brief.";
+  return "Open ticker to load Gradient AI company overview.";
 }
 
 function getTickerCatalystTags(symbol, report, quote) {
@@ -1845,9 +1845,9 @@ function renderTickerIntelView() {
     selectedReport?.companyProfile?.summary ||
       selectedReport?.overview ||
       selectedReport?.narrativeSummary ||
-      "Verified company profile unavailable right now."
+      "Gradient AI is generating a best-effort company summary."
   ).trim();
-  const profileSource = String(selectedReport?.companyProfile?.source || "unverified").trim();
+  const profileSource = String(selectedReport?.companyProfile?.source || "gradient-best-effort").trim();
   const profileUpdatedAt = String(selectedReport?.companyProfile?.updatedAt || selectedReport?.asOf || "").trim();
   const gradientSuggestion = selectedReport?.gradientSuggestion || null;
   const companyExplainerBullets = Array.isArray(selectedReport?.companyExplainer?.bullets)
@@ -1909,7 +1909,7 @@ function renderTickerIntelView() {
           <p class="schwab-card-sub">Market Coverage stays on the left. Click a ticker to update these details.</p>
         </div>
         <div class="ticker-source-badges">
-          <span class="ticker-catalyst-chip">Profile: ${escapeHtml(profileSource || "unverified")}</span>
+          <span class="ticker-catalyst-chip">AI profile: ${escapeHtml(profileSource || "gradient-best-effort")}</span>
           <span class="ticker-catalyst-chip">Updated: ${escapeHtml(profileUpdatedAt ? formatNewsTime(profileUpdatedAt) : "n/a")}</span>
         </div>
       </div>
