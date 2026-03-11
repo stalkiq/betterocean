@@ -161,6 +161,23 @@ const COMPANY_SUCCESS_NOTES = {
 const ETF_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "XLP", "XLY", "TLT", "GLD"];
 const TECH_FOCUS_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AVGO", "AMD", "INTC", "QCOM", "TSM", "ADBE", "CRM", "ORCL", "META"];
 const DIVIDEND_FOCUS_SYMBOLS = ["KO", "PEP", "PG", "JNJ", "XOM", "CVX", "T", "VZ", "PFE", "MCD", "WMT", "ABBV"];
+const SYMBOL_SECTOR_HINTS = {
+  AAPL: "Consumer Technology",
+  MSFT: "Enterprise Software",
+  NVDA: "Semiconductors",
+  AMZN: "E-Commerce & Cloud",
+  GOOGL: "Internet Services",
+  META: "Social Platforms",
+  TSLA: "Automotive & Energy",
+  JPM: "Banking",
+  BAC: "Banking",
+  XOM: "Energy",
+  UNH: "Healthcare",
+  T: "Telecom",
+  VZ: "Telecom",
+  INTC: "Semiconductors",
+  PFE: "Healthcare",
+};
 let tickerIntelState = {
   selected: "AAPL",
   loading: false,
@@ -188,6 +205,7 @@ let tickerIntelState = {
   watchboardsLoadedAt: 0,
   selectedWatchboardId: "morning-scanner",
   quotePulseBySymbol: {},
+  compareSymbols: [],
 };
 let shoppingState = {
   items: [],
@@ -539,6 +557,7 @@ function getTickerDetailTabName(symbol) {
 
 function normalizeUnifiedQuote(input, symbolHint = "") {
   const quote = input?.quote && typeof input.quote === "object" ? input.quote : input || {};
+  const reference = input?.reference && typeof input.reference === "object" ? input.reference : {};
   const symbol = String(input?.symbol || quote?.symbol || symbolHint || "")
     .trim()
     .toUpperCase();
@@ -557,8 +576,32 @@ function normalizeUnifiedQuote(input, symbolHint = "") {
   );
 
   const companyName = getCompanyName(symbol, input) || symbol;
+  const volume = toFiniteNumber(
+    quote?.totalVolume,
+    quote?.totalVolumeTraded,
+    quote?.regularMarketTradeVolume,
+    quote?.volume,
+    input?.volume
+  );
+  const marketCap = toFiniteNumber(
+    quote?.marketCap,
+    reference?.marketCap,
+    input?.marketCap,
+    reference?.fundamental?.marketCap
+  );
+  const sector =
+    normalizeCompanyLabel(
+      reference?.sector ||
+        reference?.sectorName ||
+        input?.sector ||
+        quote?.sector ||
+        reference?.fundamental?.sector ||
+        "",
+      ""
+    ) || "";
+  const dataSource = String(input?.__source || input?.source || "unknown").toLowerCase();
   if (!Number.isFinite(close) || close <= 0) {
-    return { symbol, label: companyName, companyName, unavailable: true };
+    return { symbol, label: companyName, companyName, unavailable: true, volume: null, marketCap: null, sector, dataSource };
   }
 
   const safeOpen = Number.isFinite(open) && open > 0 ? open : close;
@@ -573,6 +616,10 @@ function normalizeUnifiedQuote(input, symbolHint = "") {
     high: safeHigh,
     low: safeLow,
     close,
+    volume: Number.isFinite(volume) ? volume : null,
+    marketCap: Number.isFinite(marketCap) ? marketCap : null,
+    sector,
+    dataSource,
   };
 }
 
@@ -583,18 +630,18 @@ function parseSchwabQuotesPayload(payload, requestedSymbols) {
   if (payload && typeof payload === "object") {
     if (Array.isArray(payload.quotes)) {
       payload.quotes.forEach((entry) => {
-        const normalized = normalizeUnifiedQuote(entry);
+        const normalized = normalizeUnifiedQuote({ ...(entry || {}), __source: "schwab" });
         if (normalized?.symbol) bySymbol[normalized.symbol] = normalized;
       });
     } else {
       Object.entries(payload).forEach(([symbolKey, entry]) => {
-        const normalized = normalizeUnifiedQuote(entry, symbolKey);
+        const normalized = normalizeUnifiedQuote({ ...(entry || {}), __source: "schwab" }, symbolKey);
         if (normalized?.symbol) bySymbol[normalized.symbol] = normalized;
       });
     }
   }
 
-  return requested.map((symbol) => bySymbol[symbol] || { symbol, label: symbol, unavailable: true });
+  return requested.map((symbol) => bySymbol[symbol] || { symbol, label: symbol, unavailable: true, __source: "schwab" });
 }
 
 async function fetchTickerQuoteBatch(symbols) {
@@ -617,7 +664,7 @@ async function fetchTickerQuoteBatch(symbols) {
       const publicQuotes = Array.isArray(publicData.quotes) ? publicData.quotes : [];
       const publicBySymbol = Object.fromEntries(
         publicQuotes
-          .map((q) => normalizeUnifiedQuote(q))
+          .map((q) => normalizeUnifiedQuote({ ...q, __source: "public" }))
           .filter((q) => Boolean(q?.symbol))
           .map((q) => [q.symbol, q])
       );
@@ -631,7 +678,7 @@ async function fetchTickerQuoteBatch(symbols) {
   const publicData = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(requested.join(","))}`, {
     method: "GET",
   });
-  return Array.isArray(publicData.quotes) ? publicData.quotes : [];
+  return Array.isArray(publicData.quotes) ? publicData.quotes.map((q) => ({ ...q, __source: "public" })) : [];
 }
 
 function getPriceBucket(quote) {
@@ -1163,10 +1210,89 @@ function formatPercent(pct) {
 }
 
 function getSignalFromDelta(pct) {
-  if (!Number.isFinite(pct)) return { label: "No Data", className: "neutral" };
-  if (pct >= 0.4) return { label: "Up", className: pct >= 2 ? "bull-strong" : "bull" };
-  if (pct <= -0.4) return { label: "Down", className: pct <= -2 ? "bear-strong" : "bear" };
-  return { label: "Flat", className: "neutral" };
+  if (!Number.isFinite(pct)) return { label: "No data", text: "No data", className: "neutral" };
+  if (pct >= 0.4) return { label: "Up today", text: "Up today", className: pct >= 2 ? "bull-strong" : "bull" };
+  if (pct <= -0.4) return { label: "Down today", text: "Down today", className: pct <= -2 ? "bear-strong" : "bear" };
+  return { label: "Flat", text: "Flat", className: "neutral" };
+}
+
+function getMarketCapBucket(symbol, quote) {
+  const marketCap = Number(quote?.marketCap || 0);
+  if (!Number.isFinite(marketCap) || marketCap <= 0) {
+    const safeSymbol = String(symbol || "").toUpperCase();
+    if (["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH", "SPY", "QQQ"].includes(safeSymbol)) {
+      return "Large cap";
+    }
+    return "Unknown cap";
+  }
+  if (marketCap >= 200_000_000_000) return "Large cap";
+  if (marketCap >= 10_000_000_000) return "Mid cap";
+  return "Small cap";
+}
+
+function getCompanyTypeLabel(symbol, quote) {
+  const safeSymbol = String(symbol || "").toUpperCase();
+  if (ETF_SYMBOLS.includes(safeSymbol)) return "ETF";
+  const fromQuote = normalizeCompanyLabel(quote?.sector || "", "");
+  if (fromQuote) return fromQuote;
+  return SYMBOL_SECTOR_HINTS[safeSymbol] || "Public company";
+}
+
+function toPlainCompanySnapshot(symbol, quote) {
+  const note = String(getCompanySuccessNote(symbol) || "").trim();
+  if (!note) return "Public company with broad market coverage.";
+  const words = note.split(/\s+/).slice(0, 10);
+  return words.join(" ") + (words.length >= 10 ? "..." : "");
+}
+
+function getTickerCatalystTags(symbol, report, quote) {
+  const tags = [];
+  const news = Array.isArray(report?.newsUsed) ? report.newsUsed : [];
+  if (news.some((item) => looksLikeEarningsToday(item?.title))) tags.push("Earnings");
+  if (news.some((item) => looksLikeBigNews(item?.title))) tags.push("Big news");
+  if (Number(Math.abs(getOpenDeltaPercent(quote) || 0)) >= 1.5) tags.push("Momentum");
+  if (Array.isArray(report?.catalystWatch) && report.catalystWatch.length) tags.push("Catalyst");
+  if (!tags.length) tags.push("Steady");
+  return [...new Set(tags)].slice(0, 2);
+}
+
+function renderPriceLocationBar(quote) {
+  const low = Number(quote?.low);
+  const high = Number(quote?.high);
+  const close = Number(quote?.close);
+  if (![low, high, close].every((v) => Number.isFinite(v)) || high <= low) {
+    return '<span class="ticker-loc-empty">Range N/A</span>';
+  }
+  const pct = Math.max(0, Math.min(100, ((close - low) / (high - low)) * 100));
+  return `
+    <span class="ticker-loc-wrap" title="Current location in today's range">
+      <span class="ticker-loc-track"><span class="ticker-loc-dot" style="left:${pct.toFixed(1)}%"></span></span>
+    </span>
+  `;
+}
+
+function getDataQualityLabel(quote) {
+  const src = String(quote?.dataSource || "").toLowerCase();
+  if (src === "schwab") return "Live";
+  if (src === "public") return "Delayed";
+  return "Fallback";
+}
+
+function getNewsNoiseScore(symbol) {
+  const report = tickerIntelState.reportCache[symbol];
+  const headlines = Array.isArray(report?.newsUsed) ? report.newsUsed : [];
+  const loud = headlines.filter((h) => looksLikeBigNews(h?.title)).length;
+  return Math.min(10, loud * 2 + Math.max(0, headlines.length - 3));
+}
+
+function getSmartSetupScore(symbol, quote) {
+  const move = Math.abs(Number(getOpenDeltaPercent(quote) || 0));
+  const liquidity = Number(quote?.volume || 0);
+  const liquidityScore = liquidity > 20_000_000 ? 30 : liquidity > 5_000_000 ? 20 : liquidity > 1_000_000 ? 10 : 4;
+  const moveScore = move >= 2.5 ? 24 : move >= 1 ? 18 : move >= 0.4 ? 12 : 6;
+  const convictionScore = Math.max(0, getTickerRankingScore(symbol, quote)) * 0.45;
+  const noisePenalty = getNewsNoiseScore(symbol) * 1.8;
+  return liquidityScore + moveScore + convictionScore - noisePenalty;
 }
 
 function renderSignalPill(pct) {
@@ -1510,8 +1636,9 @@ function getFilteredTickerUniverse() {
   const symbols = tickerIntelState.universe.length ? tickerIntelState.universe : DEFAULT_TICKER_WATCHLIST;
 
   const filtered = symbols.filter((symbol) => {
-    if (search && !symbol.includes(search)) return false;
     const quote = tickerIntelState.quoteBySymbol[symbol];
+    const companyName = getCompanyName(symbol, quote).toUpperCase();
+    if (search && !symbol.includes(search) && !companyName.includes(search)) return false;
     if (priceFilter !== "all" && getPriceBucket(quote) !== priceFilter) return false;
     if (signalFilter !== "all" && getSignalKeyForQuote(quote) !== signalFilter) return false;
     return true;
@@ -1535,8 +1662,8 @@ function getFilteredTickerUniverse() {
   }
   return filtered.sort(
     (a, b) =>
-      getTickerRankingScore(b, tickerIntelState.quoteBySymbol[b]) -
-      getTickerRankingScore(a, tickerIntelState.quoteBySymbol[a])
+      getSmartSetupScore(b, tickerIntelState.quoteBySymbol[b]) -
+      getSmartSetupScore(a, tickerIntelState.quoteBySymbol[a])
   );
 }
 
@@ -1545,7 +1672,12 @@ function getTickerFilterCounts() {
     .trim()
     .toUpperCase();
   const symbols = tickerIntelState.universe.length ? tickerIntelState.universe : DEFAULT_TICKER_WATCHLIST;
-  const scoped = symbols.filter((symbol) => !search || symbol.includes(search));
+  const scoped = symbols.filter((symbol) => {
+    if (!search) return true;
+    const quote = tickerIntelState.quoteBySymbol[symbol];
+    const companyName = getCompanyName(symbol, quote).toUpperCase();
+    return symbol.includes(search) || companyName.includes(search);
+  });
   const signal = { bullish: 0, bearish: 0, neutral: 0, "no-data": 0 };
   const price = { under20: 0, "20to100": 0, "100to500": 0, "500plus": 0, unknown: 0 };
 
@@ -1576,19 +1708,39 @@ function renderTickerIntelView() {
       const companyLine = getTickerCardCompanyLine(symbol, quote);
       const signal = getSignalFromDelta(pct);
       const livePulseClass = getTickerPulseClass(symbol);
+      const companyType = getCompanyTypeLabel(symbol, quote);
+      const marketCapBucket = getMarketCapBucket(symbol, quote);
+      const snapshot = toPlainCompanySnapshot(symbol, quote);
+      const report = tickerIntelState.reportCache[symbol] || null;
+      const catalysts = getTickerCatalystTags(symbol, report, quote);
+      const dataQuality = getDataQualityLabel(quote);
+      const isCompared = Array.isArray(tickerIntelState.compareSymbols)
+        ? tickerIntelState.compareSymbols.includes(symbol)
+        : false;
       return `
-      <button type="button" class="ticker-item ${symbol === selected ? "active" : ""} ${livePulseClass}" data-ticker="${symbol}">
+      <div class="ticker-item ${symbol === selected ? "active" : ""} ${livePulseClass}" data-ticker="${symbol}" role="button" tabindex="0">
         <span class="ticker-item-top">
-          <span class="ticker-item-symbol">${symbol}</span>
-          <span>${escapeHtml(signal.text)}</span>
+          <span class="ticker-item-symbol">${symbol} - ${escapeHtml(companyLine)}</span>
+          <span>${escapeHtml(signal.label)}</span>
         </span>
-        <span class="ticker-item-company">${escapeHtml(companyLine)}</span>
+        <span class="ticker-item-company">${escapeHtml(companyType)} - ${escapeHtml(marketCapBucket)}</span>
+        <span class="ticker-item-snapshot">${escapeHtml(snapshot)}</span>
+        <span class="ticker-meta-inline">
+          ${catalysts.map((tag) => `<span class="ticker-catalyst-chip">${escapeHtml(tag)}</span>`).join("")}
+          <span class="ticker-data-quality">${escapeHtml(dataQuality)}</span>
+        </span>
         <span class="ticker-item-bottom">
           <span class="ticker-item-price">${quote ? renderPriceCell(quote.close) : "-"}</span>
           <span class="ticker-item-sparkline">${renderTickerMiniSparkline(quote)}</span>
+          <span class="ticker-item-loc">${renderPriceLocationBar(quote)}</span>
           <span>${formatPercent(pct)}</span>
         </span>
-      </button>
+        <span class="ticker-item-actions">
+          <button type="button" class="ticker-compare-btn ${isCompared ? "active" : ""}" data-compare-ticker="${symbol}">
+            ${isCompared ? "Compared" : "Compare"}
+          </button>
+        </span>
+      </div>
     `;
     })
     .join("");
@@ -1609,6 +1761,9 @@ function renderTickerIntelView() {
 
   const selectedQuote = tickerIntelState.quoteBySymbol[selected];
   const selectedCompany = getCompanyName(selected, selectedQuote);
+  const selectedCompanyType = getCompanyTypeLabel(selected, selectedQuote);
+  const selectedDataQuality = getDataQualityLabel(selectedQuote);
+  const selectedMarketCap = getMarketCapBucket(selected, selectedQuote);
   const selectedPct = selectedQuote ? getOpenDeltaPercent(selectedQuote) : null;
   const selectedReport = tickerIntelState.reportCache[selected] || null;
   const reportLoading = tickerIntelState.loading && tickerIntelState.selected === selected;
@@ -1642,6 +1797,24 @@ function renderTickerIntelView() {
         })
         .join("")
     : '<li class="settings-desc">No recent headlines yet for this ticker.</li>';
+  const compareSymbols = Array.isArray(tickerIntelState.compareSymbols) ? tickerIntelState.compareSymbols.slice(0, 3) : [];
+  const compareRows = compareSymbols
+    .map((symbol) => {
+      const quote = tickerIntelState.quoteBySymbol[symbol];
+      const pct = getOpenDeltaPercent(quote);
+      const score = Math.round(getSmartSetupScore(symbol, quote));
+      return `
+        <tr>
+          <td>${escapeHtml(symbol)}</td>
+          <td>${escapeHtml(getTickerCardCompanyLine(symbol, quote))}</td>
+          <td>${quote ? renderPriceCell(quote.close) : "-"}</td>
+          <td>${formatPercent(pct)}</td>
+          <td>${escapeHtml(getDataQualityLabel(quote))}</td>
+          <td>${Number.isFinite(score) ? score : "-"}</td>
+        </tr>
+      `;
+    })
+    .join("");
   const rightPaneHtml = `
     <div class="schwab-card">
       <h3>Ticker Workspace</h3>
@@ -1649,8 +1822,11 @@ function renderTickerIntelView() {
       <div class="trade-readiness-grid">
         <div><span>Selected ticker</span><strong>${escapeHtml(selected)}</strong></div>
         <div><span>Company</span><strong>${escapeHtml(selectedCompany)}</strong></div>
+        <div><span>Company type</span><strong>${escapeHtml(selectedCompanyType)}</strong></div>
+        <div><span>Market cap</span><strong>${escapeHtml(selectedMarketCap)}</strong></div>
         <div><span>Price</span><strong>${selectedQuote ? renderPriceCell(selectedQuote.close) : "-"}</strong></div>
         <div><span>Today</span><strong>${formatPercent(selectedPct)}</strong></div>
+        <div><span>Data quality</span><strong>${escapeHtml(selectedDataQuality)}</strong></div>
       </div>
       ${
         reportLoading
@@ -1676,6 +1852,28 @@ function renderTickerIntelView() {
           <h4>News impact timeline</h4>
           <ul class="ticker-bullets">${newsTimelineHtml}</ul>
         </article>
+      </section>
+      <section class="schwab-card">
+        <h4>Quick Compare (up to 3)</h4>
+        ${
+          compareRows
+            ? `<div class="ticker-compare-wrap">
+                <table class="time-table">
+                  <thead>
+                    <tr>
+                      <th>Symbol</th>
+                      <th>Company</th>
+                      <th>Price</th>
+                      <th>Today</th>
+                      <th>Data</th>
+                      <th>Setup</th>
+                    </tr>
+                  </thead>
+                  <tbody>${compareRows}</tbody>
+                </table>
+              </div>`
+            : '<p class="schwab-card-sub">Tap Compare on ticker cards to build a quick side-by-side view.</p>'
+        }
       </section>
     </div>
   `;
@@ -1845,6 +2043,24 @@ function wireTickerIntelEvents() {
           tickerIntelState = { ...tickerIntelState, loading: false, error: error.message || "Failed to load report." };
           if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
         });
+    });
+    btn.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      btn.click();
+    });
+  });
+  workspaceTableWrap.querySelectorAll("[data-compare-ticker]").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const symbol = String(btn.dataset.compareTicker || "").toUpperCase();
+      if (!symbol) return;
+      const current = Array.isArray(tickerIntelState.compareSymbols) ? [...tickerIntelState.compareSymbols] : [];
+      const exists = current.includes(symbol);
+      let next = exists ? current.filter((s) => s !== symbol) : [...current, symbol].slice(0, 3);
+      tickerIntelState = { ...tickerIntelState, compareSymbols: next };
+      renderTickerIntelView();
     });
   });
   workspaceTableWrap.querySelectorAll(".ticker-priority-item").forEach((btn) => {

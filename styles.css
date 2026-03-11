@@ -685,6 +685,11 @@ grid-template-columns: 480px 1fr;
 .ticker-item-symbol {
  font-weight: 700;
  letter-spacing: 0.03em;
+font-size: 12px;
+white-space: nowrap;
+overflow: hidden;
+text-overflow: ellipsis;
+max-width: 270px;
 }
 
 .ticker-item-company {
@@ -695,6 +700,39 @@ grid-template-columns: 480px 1fr;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.ticker-item-snapshot {
+  display: block;
+  font-size: 10px;
+  color: #a8bce2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ticker-meta-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ticker-catalyst-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid #415f90;
+  border-radius: 999px;
+  padding: 1px 7px;
+  font-size: 10px;
+  color: #d8e7ff;
+  background: rgba(58, 89, 134, 0.25);
+}
+
+.ticker-data-quality {
+  margin-left: auto;
+  font-size: 10px;
+  color: #97b0dc;
 }
 
 .ticker-item-top {
@@ -757,6 +795,68 @@ grid-template-columns: 480px 1fr;
 .ticker-sparkline-empty {
   font-size: 11px;
   color: #8ca2cb;
+}
+
+.ticker-item-loc {
+  min-width: 76px;
+  display: inline-flex;
+  justify-content: center;
+}
+
+.ticker-loc-wrap {
+  width: 74px;
+  display: inline-flex;
+  align-items: center;
+}
+
+.ticker-loc-track {
+  width: 74px;
+  height: 5px;
+  border-radius: 999px;
+  background: #1a3154;
+  position: relative;
+  border: 1px solid #35547f;
+}
+
+.ticker-loc-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #d4e5ff;
+  border: 1px solid #5a7fb7;
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.ticker-loc-empty {
+  font-size: 10px;
+  color: #8ca2cb;
+}
+
+.ticker-item-actions {
+  margin-top: 2px;
+}
+
+.ticker-compare-btn {
+  border: 1px solid #3a5a89;
+  border-radius: 7px;
+  background: #122846;
+  color: #d7e8ff;
+  padding: 4px 7px;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.ticker-compare-btn.active {
+  border-color: #7aa8ff;
+  background: #1a3965;
+}
+
+.ticker-compare-wrap {
+  overflow: auto;
+  border: 1px solid #2b4469;
+  border-radius: 9px;
 }
 
 .ticker-item.live-up .ticker-item-price,
