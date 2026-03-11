@@ -4360,9 +4360,14 @@ function activateTab(tabName) {
     return;
   }
   if (tabName === PORTFOLIO_TAB) {
+    const targetTab = PORTFOLIO_TAB;
     loadSchwabContextData()
-      .then(() => renderPortfolioView())
+      .then(() => {
+        if (currentTab !== targetTab) return;
+        renderPortfolioView();
+      })
       .catch((error) => {
+        if (currentTab !== targetTab) return;
         workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
           error.message || "Failed to load portfolio data."
         }</p></div>`;
@@ -4370,6 +4375,7 @@ function activateTab(tabName) {
     return;
   }
   if (tabName === INVESTMENTS_TAB) {
+    const targetTab = INVESTMENTS_TAB;
     const hasFreshInvestments =
       Array.isArray(investmentsMarket.assets) &&
       investmentsMarket.assets.length > 0 &&
@@ -4380,10 +4386,12 @@ function activateTab(tabName) {
       renderInvestmentsLoading();
       loadInvestmentsMarketData()
         .then(() => {
+          if (currentTab !== targetTab) return;
           investmentsLoadedAt = Date.now();
           renderInvestmentsView();
         })
         .catch((error) => {
+          if (currentTab !== targetTab) return;
           workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
             error.message || "Failed to load market data."
           }</p></div>`;
@@ -4392,6 +4400,7 @@ function activateTab(tabName) {
     return;
   }
   if (tabName === TICKER_INTEL_TAB) {
+    const targetTab = TICKER_INTEL_TAB;
     renderTickerIntelLoading();
     const needsWatchboards =
       !tickerIntelState.watchboardsLoadedAt ||
@@ -4411,6 +4420,7 @@ function activateTab(tabName) {
         : loadTickerUniverse(500).catch(() => DEFAULT_TICKER_WATCHLIST);
     universePromise
       .then(() => {
+        if (currentTab !== targetTab) return;
         renderTickerIntelView();
         const selectedSymbol = String(tickerIntelState.selected || "").toUpperCase();
         if (selectedSymbol) {
@@ -4431,6 +4441,7 @@ function activateTab(tabName) {
         startTickerIntelLiveRefresh();
       })
       .catch((error) => {
+        if (currentTab !== targetTab) return;
         tickerIntelState = {
           ...tickerIntelState,
           loading: false,
@@ -4446,9 +4457,11 @@ function activateTab(tabName) {
     return;
   }
   if (tabName === TIME_TAB) {
+    const targetTab = TIME_TAB;
     workspaceTableWrap.innerHTML = '<div class="do-loading">Building opening bell playbook...</div>';
     loadOpeningPlaybook()
       .then(async () => {
+        if (currentTab !== targetTab) return;
         openingPlaybookLoadedAt = Date.now();
         const symbols = openingPlaybook.buckets.flatMap((bucket) =>
           Array.isArray(bucket.tickers) ? bucket.tickers : []
@@ -4562,9 +4575,11 @@ function activateTab(tabName) {
             }
           </div>
         `;
+        if (currentTab !== targetTab) return;
         startMarketCountdown();
       })
       .catch((error) => {
+        if (currentTab !== targetTab) return;
         workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
           error.message || "Failed to load opening playbook."
         }</p></div>`;
@@ -4642,13 +4657,16 @@ workspaceRefreshBtn?.addEventListener("click", () => {
     return;
   }
   if (currentTab === INVESTMENTS_TAB) {
+    const targetTab = INVESTMENTS_TAB;
     renderInvestmentsLoading();
     loadInvestmentsMarketData()
       .then(() => {
+        if (currentTab !== targetTab) return;
         investmentsLoadedAt = Date.now();
         renderInvestmentsView();
       })
       .catch((error) => {
+        if (currentTab !== targetTab) return;
         workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
           error.message || "Failed to load market data."
         }</p></div>`;
@@ -4656,9 +4674,14 @@ workspaceRefreshBtn?.addEventListener("click", () => {
     return;
   }
   if (currentTab === PORTFOLIO_TAB) {
+    const targetTab = PORTFOLIO_TAB;
     loadSchwabContextData()
-      .then(() => renderPortfolioView())
+      .then(() => {
+        if (currentTab !== targetTab) return;
+        renderPortfolioView();
+      })
       .catch((error) => {
+        if (currentTab !== targetTab) return;
         workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
           error.message || "Failed to load portfolio data."
         }</p></div>`;
@@ -4666,6 +4689,7 @@ workspaceRefreshBtn?.addEventListener("click", () => {
     return;
   }
   if (currentTab === TICKER_INTEL_TAB) {
+    const targetTab = TICKER_INTEL_TAB;
     const universePromise =
       tickerIntelState.universe.length >= 50
         ? Promise.resolve(tickerIntelState.universe)
@@ -4675,10 +4699,12 @@ workspaceRefreshBtn?.addEventListener("click", () => {
       .then(() => loadTickerWatchboards())
       .then(() => loadTickerIntelReport(tickerIntelState.selected || "AAPL"))
       .then(() => {
+        if (currentTab !== targetTab) return;
         renderTickerIntelView();
         startTickerIntelLiveRefresh();
       })
       .catch((error) => {
+        if (currentTab !== targetTab) return;
         tickerIntelState = { ...tickerIntelState, loading: false, error: error.message || "Refresh failed." };
         renderTickerIntelView();
       });
