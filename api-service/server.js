@@ -770,6 +770,15 @@ function buildTickerReportFallback(symbol, quote, news, companyProfile = null) {
       asOf: new Date().toISOString(),
       source: "fallback",
     },
+    agentPanels: {
+      company: companyProfile?.summary
+        ? [trimToWords(companyProfile.summary, 16)]
+        : ["Company business profile is unavailable from trusted sources right now."],
+      catalyst: news.slice(0, 3).map((item) => trimToWords(item?.title || "", 14)).filter(Boolean),
+      risk: ["Headline volatility can quickly reverse intraday direction.", "Use sizing and stop discipline before entering trades."],
+      source: "fallback",
+      asOf: new Date().toISOString(),
+    },
     companyExplainer: null,
     debate: {
       bullAnalyst: {
@@ -1070,7 +1079,7 @@ Rules:
       }
     }
 
-    const [bullRaw, bearRaw] = await Promise.all([
+    const [bullRaw, bearRaw, catalystRaw, riskRaw] = await Promise.all([
       gradientStructuredJson({
         completionsUrl,
         key,
@@ -1112,6 +1121,48 @@ Return STRICT JSON:
 
 Rules:
 - Use only the provided quote + headlines.
+- No markdown, no extra text.
+`,
+      }),
+      gradientStructuredJson({
+        completionsUrl,
+        key,
+        model,
+        systemPrompt:
+          "You are Catalyst Agent. Identify what could move this ticker soon using only provided inputs. Return strict JSON only.",
+        userPrompt: `
+${sharedContext}
+
+Return STRICT JSON:
+{
+  "bullets": ["string", "string", "string"]
+}
+
+Rules:
+- 2-3 bullets, plain American English.
+- Keep each bullet under 18 words.
+- Use only provided quote + profile + headlines.
+- No markdown, no extra text.
+`,
+      }),
+      gradientStructuredJson({
+        completionsUrl,
+        key,
+        model,
+        systemPrompt:
+          "You are Risk Agent. Identify downside/uncertainty factors for this ticker using only provided inputs. Return strict JSON only.",
+        userPrompt: `
+${sharedContext}
+
+Return STRICT JSON:
+{
+  "bullets": ["string", "string", "string"]
+}
+
+Rules:
+- 2-3 bullets, plain American English.
+- Keep each bullet under 18 words.
+- Focus on execution and information risk.
 - No markdown, no extra text.
 `,
       }),
@@ -1185,6 +1236,16 @@ Rules:
         updatedAt: new Date().toISOString(),
       },
       companyExplainer,
+      agentPanels: {
+        company:
+          companyExplainer && Array.isArray(companyExplainer.bullets) && companyExplainer.bullets.length
+            ? companyExplainer.bullets.slice(0, 3)
+            : [],
+        catalyst: sanitizeArray(catalystRaw?.bullets, 3),
+        risk: sanitizeArray(riskRaw?.bullets, 3),
+        source: "gradient-multi-agent",
+        asOf: new Date().toISOString(),
+      },
       gradientSuggestion: {
         title: String(refereeRaw?.suggestionTitle || "Risk-managed setup").trim() || "Risk-managed setup",
         bullets: sanitizeArray(refereeRaw?.suggestionBullets, 4),
@@ -1789,6 +1850,11 @@ async function buildOpeningPlaybook() {
           tickers: ["IWM", "TLT", "GLD"],
         },
       ],
+      agentBriefs: {
+        macro: ["Macro Agent: Watch index direction and bond yield moves into the opening hour."],
+        sector: ["Sector Agent: Track where leadership appears after the first 15 minutes."],
+        opening: ["Opening Agent: Focus on liquid names with clean opening-range behavior."],
+      },
       marketSnapshot,
     };
   }
@@ -1806,7 +1872,12 @@ Return STRICT JSON only with this shape:
   "buckets": [
     { "name": "string", "thesis": "string", "tickers": ["AAPL","MSFT","..."] }
   ],
-  "notes": "string"
+  "notes": "string",
+  "agentBriefs": {
+    "macro": ["string","string"],
+    "sector": ["string","string"],
+    "opening": ["string","string"]
+  }
 }
 
 Rules:
@@ -1847,17 +1918,23 @@ Rules:
   }
   const parsed = JSON.parse(jsonMatch[0]);
   const buckets = Array.isArray(parsed?.buckets) ? parsed.buckets : [];
+  const parsedBriefs = parsed?.agentBriefs && typeof parsed.agentBriefs === "object" ? parsed.agentBriefs : {};
   return {
     asOf: new Date().toISOString(),
     source: "gradient",
     buckets,
     notes: parsed?.notes || "",
+    agentBriefs: {
+      macro: sanitizeArray(parsedBriefs?.macro, 3),
+      sector: sanitizeArray(parsedBriefs?.sector, 3),
+      opening: sanitizeArray(parsedBriefs?.opening, 3),
+    },
     marketSnapshot,
   };
 }
 
 app.get(["/market/opening-playbook", "/api/market/opening-playbook"], async (_req, res) => {
-  const redisKey = buildRedisCacheKey("opening-playbook");
+  const redisKey = buildRedisCacheKey("opening-playbook-v2");
   const redisCached = await getRedisCacheJson(redisKey);
   if (redisCached) {
     sendJson(res, 200, redisCached);
@@ -1923,7 +2000,7 @@ app.get(["/market/ticker-report", "/api/market/ticker-report"], async (req, res)
     sendJson(res, 400, { error: "symbol query param is required." });
     return;
   }
-  const redisKey = buildRedisCacheKey("ticker-report-v2", symbol);
+  const redisKey = buildRedisCacheKey("ticker-report-v3", symbol);
   const redisCached = await getRedisCacheJson(redisKey);
   if (redisCached) {
     sendJson(res, 200, redisCached);

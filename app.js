@@ -119,7 +119,7 @@ let chatHistory = [];
 let schwabSession = { connected: false };
 let schwabData = { accounts: null, openOrders: null, accountError: "" };
 let investmentsMarket = { assets: [], updatedAt: null, beginnerBrief: null };
-let openingPlaybook = { buckets: [], asOf: null };
+let openingPlaybook = { buckets: [], asOf: null, agentBriefs: null };
 let openingQuotesBySymbol = {};
 const DEFAULT_TICKER_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH"];
 const SHOPPING_10_TO_50_SYMBOLS = ["F", "PFE", "BAC", "INTC", "T", "VZ", "KHC", "CCL", "SNAP", "PARA"];
@@ -356,6 +356,7 @@ async function loadOpeningPlaybook() {
     asOf: data.asOf || null,
     notes: data.notes || "",
     source: data.source || "unknown",
+    agentBriefs: data?.agentBriefs && typeof data.agentBriefs === "object" ? data.agentBriefs : null,
   };
   return openingPlaybook;
 }
@@ -1814,6 +1815,10 @@ function renderTickerIntelView() {
   const companyExplainerBullets = Array.isArray(selectedReport?.companyExplainer?.bullets)
     ? selectedReport.companyExplainer.bullets.filter(Boolean).slice(0, 3)
     : [];
+  const agentPanels = selectedReport?.agentPanels && typeof selectedReport.agentPanels === "object" ? selectedReport.agentPanels : null;
+  const companyAgentBullets = Array.isArray(agentPanels?.company) ? agentPanels.company.filter(Boolean).slice(0, 3) : [];
+  const catalystAgentBullets = Array.isArray(agentPanels?.catalyst) ? agentPanels.catalyst.filter(Boolean).slice(0, 3) : [];
+  const riskAgentBullets = Array.isArray(agentPanels?.risk) ? agentPanels.risk.filter(Boolean).slice(0, 3) : [];
   const whyToday = [
     ...(Array.isArray(selectedReport?.catalystWatch) ? selectedReport.catalystWatch.slice(0, 2) : []),
     ...(Array.isArray(selectedReport?.bullishFactors) ? selectedReport.bullishFactors.slice(0, 1) : []),
@@ -1908,7 +1913,11 @@ function renderTickerIntelView() {
         <article class="schwab-card">
           <h4>What this company does</h4>
           ${
-            companyExplainerBullets.length
+            companyAgentBullets.length
+              ? `<ul class="ticker-bullets">
+                  ${companyAgentBullets.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
+                </ul>`
+              : companyExplainerBullets.length
               ? `<ul class="ticker-bullets">
                   ${companyExplainerBullets.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
                 </ul>`
@@ -1918,7 +1927,19 @@ function renderTickerIntelView() {
         <article class="schwab-card">
           <h4>Why today could move this ticker</h4>
           <ul class="ticker-bullets">
-            ${(whyToday.length ? whyToday : ["No major catalyst detected right now."])
+            ${(catalystAgentBullets.length ? catalystAgentBullets : whyToday.length ? whyToday : ["No major catalyst detected right now."])
+              .map((line) => `<li>${escapeHtml(line)}</li>`)
+              .join("")}
+          </ul>
+        </article>
+        <article class="schwab-card">
+          <h4>Risk agent</h4>
+          <ul class="ticker-bullets">
+            ${(riskAgentBullets.length
+              ? riskAgentBullets
+              : Array.isArray(selectedReport?.riskFlags) && selectedReport.riskFlags.length
+                ? selectedReport.riskFlags.slice(0, 3)
+                : ["No major risk flags detected right now."])
               .map((line) => `<li>${escapeHtml(line)}</li>`)
               .join("")}
           </ul>
@@ -4285,6 +4306,24 @@ function activateTab(tabName) {
             `;
           })
           .join("");
+        const openingAgentBriefs = openingPlaybook?.agentBriefs && typeof openingPlaybook.agentBriefs === "object"
+          ? openingPlaybook.agentBriefs
+          : {};
+        const openingAgentCards = [
+          { title: "Macro Agent", bullets: Array.isArray(openingAgentBriefs.macro) ? openingAgentBriefs.macro.slice(0, 3) : [] },
+          { title: "Sector Agent", bullets: Array.isArray(openingAgentBriefs.sector) ? openingAgentBriefs.sector.slice(0, 3) : [] },
+          { title: "Opening Agent", bullets: Array.isArray(openingAgentBriefs.opening) ? openingAgentBriefs.opening.slice(0, 3) : [] },
+        ]
+          .map((panel) => {
+            const items = panel.bullets.length ? panel.bullets : ["Brief unavailable right now."];
+            return `
+              <article class="schwab-card">
+                <h4>${panel.title}</h4>
+                <ul class="ticker-bullets">${items.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>
+              </article>
+            `;
+          })
+          .join("");
 
         workspaceTableWrap.innerHTML = `
           <div class="agent-view">
@@ -4307,6 +4346,9 @@ function activateTab(tabName) {
                   openingPlaybook.asOf ? new Date(openingPlaybook.asOf).toLocaleString() : "-"
                 }</div>
               </article>
+            </section>
+            <section class="schwab-grid">
+              ${openingAgentCards}
             </section>
             <section class="schwab-grid">
               ${bucketHtml || '<article class="schwab-card"><h4>No buckets</h4><p class="schwab-card-sub">Try Refresh to regenerate opening ideas.</p></article>'}
