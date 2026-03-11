@@ -23,6 +23,7 @@ const MARKET_OVERVIEW_TTL_MS = Number(process.env.MARKET_OVERVIEW_TTL_MS || 20 *
 const OPENING_PLAYBOOK_TTL_MS = Number(process.env.OPENING_PLAYBOOK_TTL_MS || 90 * 1000);
 const TICKER_REPORT_TTL_MS = Number(process.env.TICKER_REPORT_TTL_MS || 5 * 60 * 1000);
 const TICKER_WATCHBOARDS_TTL_MS = Number(process.env.TICKER_WATCHBOARDS_TTL_MS || 3 * 60 * 1000);
+const AGENT_BRIEF_TTL_MS = Number(process.env.AGENT_BRIEF_TTL_MS || 3 * 60 * 1000);
 const SCHWAB_CACHE_TTL_MS = Number(process.env.SCHWAB_CACHE_TTL_MS || 12 * 1000);
 const REDIS_URL = process.env.REDIS_URL || process.env.DO_REDIS_URL || "";
 const REDIS_CACHE_PREFIX = process.env.REDIS_CACHE_PREFIX || "bo:cache:v1";
@@ -840,6 +841,54 @@ function sanitizeSignal(value, fallback = "neutral") {
 
 function sanitizeArray(value, maxItems = 6) {
   return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean).slice(0, maxItems) : [];
+}
+
+function hashPayloadForCache(payload) {
+  try {
+    const raw = JSON.stringify(payload || {});
+    return crypto.createHash("sha1").update(raw).digest("hex").slice(0, 18);
+  } catch {
+    return crypto.randomBytes(8).toString("hex");
+  }
+}
+
+function buildPortfolioBriefFallback(payload) {
+  const accountCount = Number(payload?.accountCount || 0);
+  const positionCount = Number(payload?.positionCount || 0);
+  const buyingPower = Number(payload?.buyingPower || 0);
+  return {
+    source: "fallback",
+    asOf: new Date().toISOString(),
+    allocation: [
+      `Accounts connected: ${accountCount}. Positions tracked: ${positionCount}.`,
+      positionCount > 0 ? "Keep top position weights balanced to reduce single-name exposure." : "Start with small staged entries while building your first positions.",
+    ],
+    risk: [
+      buyingPower <= 0 ? "Buying power is low. Add cash before placing larger buy orders." : "Set a max risk budget per new position before entering.",
+      "Review stale open orders daily to avoid unintended fills.",
+    ],
+    income: [
+      "Blend growth names with cash-generating holdings if income stability matters.",
+      "Track dividend dates and payout consistency before relying on yield.",
+    ],
+  };
+}
+
+function buildShoppingBriefFallback(payload) {
+  const itemCount = Number(payload?.itemCount || 0);
+  const marketOpen = Boolean(payload?.marketOpen);
+  return {
+    source: "fallback",
+    asOf: new Date().toISOString(),
+    planner: [
+      itemCount > 0 ? `Cart has ${itemCount} item(s). Prioritize liquid symbols first.` : "Add 1-2 liquid tickers first, then expand the cart.",
+      "Use smaller initial size and scale only after confirmation.",
+    ],
+    execution: [
+      marketOpen ? "Market is open. Monitor fills quickly after submit." : "Market is closed. Queue planning now and submit when open.",
+      "If status is working, check order updates before resubmitting duplicates.",
+    ],
+  };
 }
 
 function sanitizeActionBias(value, fallback = "balanced") {
@@ -1815,6 +1864,131 @@ async function handleChat(req, res) {
 
 app.post("/chat/message", handleChat);
 app.post("/api/chat/message", handleChat);
+
+app.post(["/agents/portfolio-brief", "/api/agents/portfolio-brief"], async (req, res) => {
+  const payload = req.body && typeof req.body === "object" ? req.body : {};
+  const redisKey = buildRedisCacheKey("agent-portfolio-brief-v1", hashPayloadForCache(payload));
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached) {
+    sendJson(res, 200, redisCached);
+    return;
+  }
+
+  const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
+  const key = process.env.GRADIENT_AGENT_KEY;
+  if (!endpoint || !key) {
+    const fallback = buildPortfolioBriefFallback(payload);
+    await setRedisCacheJson(redisKey, fallback, AGENT_BRIEF_TTL_MS);
+    sendJson(res, 200, fallback);
+    return;
+  }
+
+  try {
+    const base = endpoint.replace(/\/+$/, "");
+    const completionsUrl = base.includes("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const model = process.env.GRADIENT_MODEL || "openai-gpt-oss-120b";
+    const aiRaw = await gradientStructuredJson({
+      completionsUrl,
+      key,
+      model,
+      systemPrompt:
+        "You are a portfolio coaching panel. Return concise bullets in plain American English. Return strict JSON only.",
+      userPrompt: `
+Portfolio snapshot JSON:
+${JSON.stringify(payload, null, 2)}
+
+Return STRICT JSON:
+{
+  "allocation": ["string","string","string"],
+  "risk": ["string","string","string"],
+  "income": ["string","string","string"]
+}
+
+Rules:
+- 2-3 bullets per section.
+- Keep each bullet under 16 words.
+- No markdown, no extra text.
+`,
+    });
+    const output = {
+      source: "gradient",
+      asOf: new Date().toISOString(),
+      allocation: sanitizeArray(aiRaw?.allocation, 3),
+      risk: sanitizeArray(aiRaw?.risk, 3),
+      income: sanitizeArray(aiRaw?.income, 3),
+    };
+    const normalized =
+      output.allocation.length && output.risk.length && output.income.length
+        ? output
+        : buildPortfolioBriefFallback(payload);
+    await setRedisCacheJson(redisKey, normalized, AGENT_BRIEF_TTL_MS);
+    sendJson(res, 200, normalized);
+  } catch {
+    const fallback = buildPortfolioBriefFallback(payload);
+    await setRedisCacheJson(redisKey, fallback, AGENT_BRIEF_TTL_MS);
+    sendJson(res, 200, fallback);
+  }
+});
+
+app.post(["/agents/shopping-brief", "/api/agents/shopping-brief"], async (req, res) => {
+  const payload = req.body && typeof req.body === "object" ? req.body : {};
+  const redisKey = buildRedisCacheKey("agent-shopping-brief-v1", hashPayloadForCache(payload));
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached) {
+    sendJson(res, 200, redisCached);
+    return;
+  }
+
+  const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
+  const key = process.env.GRADIENT_AGENT_KEY;
+  if (!endpoint || !key) {
+    const fallback = buildShoppingBriefFallback(payload);
+    await setRedisCacheJson(redisKey, fallback, AGENT_BRIEF_TTL_MS);
+    sendJson(res, 200, fallback);
+    return;
+  }
+
+  try {
+    const base = endpoint.replace(/\/+$/, "");
+    const completionsUrl = base.includes("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const model = process.env.GRADIENT_MODEL || "openai-gpt-oss-120b";
+    const aiRaw = await gradientStructuredJson({
+      completionsUrl,
+      key,
+      model,
+      systemPrompt:
+        "You are a trading execution support panel. Return concise bullets in plain American English. Return strict JSON only.",
+      userPrompt: `
+Shopping cart snapshot JSON:
+${JSON.stringify(payload, null, 2)}
+
+Return STRICT JSON:
+{
+  "planner": ["string","string","string"],
+  "execution": ["string","string","string"]
+}
+
+Rules:
+- 2-3 bullets per section.
+- Keep each bullet under 16 words.
+- No markdown, no extra text.
+`,
+    });
+    const output = {
+      source: "gradient",
+      asOf: new Date().toISOString(),
+      planner: sanitizeArray(aiRaw?.planner, 3),
+      execution: sanitizeArray(aiRaw?.execution, 3),
+    };
+    const normalized = output.planner.length && output.execution.length ? output : buildShoppingBriefFallback(payload);
+    await setRedisCacheJson(redisKey, normalized, AGENT_BRIEF_TTL_MS);
+    sendJson(res, 200, normalized);
+  } catch {
+    const fallback = buildShoppingBriefFallback(payload);
+    await setRedisCacheJson(redisKey, fallback, AGENT_BRIEF_TTL_MS);
+    sendJson(res, 200, fallback);
+  }
+});
 
 async function buildOpeningPlaybook() {
   const symbols = [

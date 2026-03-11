@@ -46,6 +46,7 @@ const TICKER_LIVE_PULSE_MS = 2200;
 const TICKER_INITIAL_UNIVERSE_LIMIT = 220;
 const TICKER_DEFAULT_VISIBLE_COUNT = 90;
 const TICKER_VISIBLE_INCREMENT = 60;
+const AGENT_BRIEF_TTL_MS = 3 * 60 * 1000;
 
 const AGENTS = [
   {
@@ -240,6 +241,20 @@ let shoppingState = {
   executionByItem: {},
   lastExecutionResults: [],
   lastSubmittedAt: 0,
+};
+let portfolioAgentBriefState = {
+  loading: false,
+  data: null,
+  error: "",
+  fetchedAt: 0,
+  lastKey: "",
+};
+let shoppingAgentBriefState = {
+  loading: false,
+  data: null,
+  error: "",
+  fetchedAt: 0,
+  lastKey: "",
 };
 let marketCountdownTimer = null;
 let marketOpenThemeTimer = null;
@@ -2347,6 +2362,124 @@ function getOpenOrdersSummary() {
   return { total: orders.length, stale: stale.length, recent: orders.slice(0, 5) };
 }
 
+function buildBriefKey(payload) {
+  const text = JSON.stringify(payload || {});
+  let hash = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = (hash << 5) - hash + text.charCodeAt(i);
+    hash |= 0;
+  }
+  return String(hash);
+}
+
+function buildPortfolioAgentPayload() {
+  const portfolio = getPortfolioSnapshot();
+  const orders = getOpenOrdersSummary();
+  return {
+    accountCount: portfolio.accountCount,
+    positionCount: portfolio.positionCount,
+    totalLiquidationValue: Math.round(Number(portfolio.totalLiquidationValue || 0)),
+    totalCash: Math.round(Number(portfolio.totalCash || 0)),
+    buyingPower: Math.round(
+      getLinkedAccounts().reduce((sum, account) => sum + Number(account?.securitiesAccount?.currentBalances?.buyingPower || 0), 0)
+    ),
+    topHoldings: (Array.isArray(portfolio.top3) ? portfolio.top3 : []).map((item) => ({
+      symbol: item?.symbol || "-",
+      marketValue: Math.round(Number(item?.marketValue || 0)),
+      weightPct: Number(item?.weight || 0),
+    })),
+    openOrders: {
+      total: orders.total,
+      stale: orders.stale,
+    },
+  };
+}
+
+function buildShoppingAgentPayload() {
+  const funding = getShoppingFundingSnapshot();
+  const watchSymbols = getShoppingWatchSymbols().slice(0, 8);
+  return {
+    marketOpen: isUsMarketOpenNow(),
+    itemCount: Array.isArray(shoppingState.items) ? shoppingState.items.length : 0,
+    executionStyle: shoppingState.executionStyle || "fast-fill",
+    cartEstimatedCost: Math.round(Number(funding.cartEstimatedCost || 0)),
+    availableToTrade: Math.round(Number(funding.availableToTrade || 0)),
+    remainingAfterCart: Math.round(Number(funding.remainingAfterCart || 0)),
+    unresolvedCount: Number(funding.unresolvedCount || 0),
+    watchSymbols,
+  };
+}
+
+function maybeLoadPortfolioAgentBrief() {
+  if (!schwabSession.connected) return;
+  const payload = buildPortfolioAgentPayload();
+  const key = buildBriefKey(payload);
+  const isFresh =
+    portfolioAgentBriefState.data &&
+    portfolioAgentBriefState.lastKey === key &&
+    Date.now() - Number(portfolioAgentBriefState.fetchedAt || 0) < AGENT_BRIEF_TTL_MS;
+  if (isFresh || (portfolioAgentBriefState.loading && portfolioAgentBriefState.lastKey === key)) return;
+
+  portfolioAgentBriefState = { ...portfolioAgentBriefState, loading: true, error: "", lastKey: key };
+  schwabApi("/api/agents/portfolio-brief", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+    .then((data) => {
+      portfolioAgentBriefState = {
+        loading: false,
+        data: data && typeof data === "object" ? data : null,
+        error: "",
+        fetchedAt: Date.now(),
+        lastKey: key,
+      };
+      if (currentTab === PORTFOLIO_TAB) renderPortfolioView();
+    })
+    .catch((error) => {
+      portfolioAgentBriefState = {
+        ...portfolioAgentBriefState,
+        loading: false,
+        error: error?.message || "Portfolio agents unavailable.",
+      };
+      if (currentTab === PORTFOLIO_TAB) renderPortfolioView();
+    });
+}
+
+function maybeLoadShoppingAgentBrief() {
+  if (!schwabSession.connected) return;
+  const payload = buildShoppingAgentPayload();
+  const key = buildBriefKey(payload);
+  const isFresh =
+    shoppingAgentBriefState.data &&
+    shoppingAgentBriefState.lastKey === key &&
+    Date.now() - Number(shoppingAgentBriefState.fetchedAt || 0) < AGENT_BRIEF_TTL_MS;
+  if (isFresh || (shoppingAgentBriefState.loading && shoppingAgentBriefState.lastKey === key)) return;
+
+  shoppingAgentBriefState = { ...shoppingAgentBriefState, loading: true, error: "", lastKey: key };
+  schwabApi("/api/agents/shopping-brief", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+    .then((data) => {
+      shoppingAgentBriefState = {
+        loading: false,
+        data: data && typeof data === "object" ? data : null,
+        error: "",
+        fetchedAt: Date.now(),
+        lastKey: key,
+      };
+      if (currentTab === SHOPPING_TAB) renderShoppingView();
+    })
+    .catch((error) => {
+      shoppingAgentBriefState = {
+        ...shoppingAgentBriefState,
+        loading: false,
+        error: error?.message || "Shopping agents unavailable.",
+      };
+      if (currentTab === SHOPPING_TAB) renderShoppingView();
+    });
+}
+
 function formatDollars(value) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -2439,6 +2572,12 @@ function renderPortfolioView() {
     return sum + (Number.isFinite(value) ? value : 0);
   }, 0);
   const fundingRequired = totalBuyingPower <= 0;
+  const portfolioAgentData = portfolioAgentBriefState.data && typeof portfolioAgentBriefState.data === "object"
+    ? portfolioAgentBriefState.data
+    : null;
+  const allocationBullets = Array.isArray(portfolioAgentData?.allocation) ? portfolioAgentData.allocation.slice(0, 3) : [];
+  const riskBullets = Array.isArray(portfolioAgentData?.risk) ? portfolioAgentData.risk.slice(0, 3) : [];
+  const incomeBullets = Array.isArray(portfolioAgentData?.income) ? portfolioAgentData.income.slice(0, 3) : [];
 
   const accountCards = accounts
     .map((account) => {
@@ -2501,6 +2640,38 @@ function renderPortfolioView() {
         <article class="schwab-metric-card">
           <h4>Available Buying Power</h4>
           <div class="schwab-metric-value small">${formatMoney(totalBuyingPower)}</div>
+        </article>
+      </section>
+      <section class="schwab-grid">
+        <article class="schwab-card">
+          <h4>Allocation Agent</h4>
+          <ul class="ticker-bullets">
+            ${(allocationBullets.length
+              ? allocationBullets
+              : [portfolioAgentBriefState.loading ? "Building allocation brief..." : "Allocation brief unavailable right now."])
+              .map((line) => `<li>${escapeHtml(line)}</li>`)
+              .join("")}
+          </ul>
+        </article>
+        <article class="schwab-card">
+          <h4>Risk Agent</h4>
+          <ul class="ticker-bullets">
+            ${(riskBullets.length
+              ? riskBullets
+              : [portfolioAgentBriefState.loading ? "Building risk brief..." : "Risk brief unavailable right now."])
+              .map((line) => `<li>${escapeHtml(line)}</li>`)
+              .join("")}
+          </ul>
+        </article>
+        <article class="schwab-card">
+          <h4>Income Agent</h4>
+          <ul class="ticker-bullets">
+            ${(incomeBullets.length
+              ? incomeBullets
+              : [portfolioAgentBriefState.loading ? "Building income brief..." : "Income brief unavailable right now."])
+              .map((line) => `<li>${escapeHtml(line)}</li>`)
+              .join("")}
+          </ul>
         </article>
       </section>
       ${
@@ -2604,6 +2775,7 @@ function renderPortfolioView() {
       });
     });
   }
+  maybeLoadPortfolioAgentBrief();
 }
 
 function buildMissionZoneContext(agentId) {
@@ -2639,6 +2811,8 @@ async function logoutSchwab() {
   chatHistory = [];
   schwabSession = { connected: false };
   schwabData = { accounts: null, openOrders: null, accountError: "" };
+  portfolioAgentBriefState = { loading: false, data: null, error: "", fetchedAt: 0, lastKey: "" };
+  shoppingAgentBriefState = { loading: false, data: null, error: "", fetchedAt: 0, lastKey: "" };
   updateSchwabChatBadge();
   openTabs.add(SCHWAB_CONNECT_TAB);
   activateTab(SCHWAB_CONNECT_TAB);
@@ -3577,6 +3751,11 @@ function renderShoppingView() {
     return side === "BUY";
   });
   const funding = getShoppingFundingSnapshot();
+  const shoppingAgentData = shoppingAgentBriefState.data && typeof shoppingAgentBriefState.data === "object"
+    ? shoppingAgentBriefState.data
+    : null;
+  const plannerBullets = Array.isArray(shoppingAgentData?.planner) ? shoppingAgentData.planner.slice(0, 3) : [];
+  const executionBullets = Array.isArray(shoppingAgentData?.execution) ? shoppingAgentData.execution.slice(0, 3) : [];
   const hasFundingData = isConnected && funding.accountCount > 0;
   const holdings = getShoppingHoldings(10);
   const sellChoices = holdings;
@@ -3757,6 +3936,28 @@ function renderShoppingView() {
             ? "Fast Fill: AI prioritizes execution speed."
             : "Smart Price: AI prioritizes price quality with likely fill."}
         </p>
+      </section>
+      <section class="schwab-grid">
+        <article class="schwab-card">
+          <h4>Order Planner Agent</h4>
+          <ul class="ticker-bullets">
+            ${(plannerBullets.length
+              ? plannerBullets
+              : [shoppingAgentBriefState.loading ? "Building order planner brief..." : "Order planner brief unavailable right now."])
+              .map((line) => `<li>${escapeHtml(line)}</li>`)
+              .join("")}
+          </ul>
+        </article>
+        <article class="schwab-card">
+          <h4>Execution Watcher Agent</h4>
+          <ul class="ticker-bullets">
+            ${(executionBullets.length
+              ? executionBullets
+              : [shoppingAgentBriefState.loading ? "Building execution watcher brief..." : "Execution watcher brief unavailable right now."])
+              .map((line) => `<li>${escapeHtml(line)}</li>`)
+              .join("")}
+          </ul>
+        </article>
       </section>
       ${
         hasFundingData && funding.cartOverage > 0
@@ -3994,6 +4195,7 @@ function renderShoppingView() {
   if (!shoppingState.loadingQuotes) {
     refreshShoppingQuotes().catch(() => ({}));
   }
+  maybeLoadShoppingAgentBrief();
   updateShoppingSubmitButtonState();
   startShoppingMarketClock();
 }
