@@ -247,14 +247,26 @@ async function initRedisCache() {
     return;
   }
   try {
-    redisClient = createClient({ url: REDIS_URL });
+    redisClient = createClient({
+      url: REDIS_URL,
+      socket: {
+        connectTimeout: 3000,
+      },
+    });
     redisClient.on("error", (err) => {
       redisReady = false;
       console.error("Redis client error:", err?.message || err);
     });
-    await redisClient.connect();
-    redisReady = true;
-    console.log("Redis cache connected.");
+    redisClient
+      .connect()
+      .then(() => {
+        redisReady = true;
+        console.log("Redis cache connected.");
+      })
+      .catch((err) => {
+        redisReady = false;
+        console.error("Redis cache init failed:", err?.message || err);
+      });
   } catch (err) {
     redisReady = false;
     redisClient = null;
@@ -2246,7 +2258,7 @@ app.delete(["/schwab/orders/:orderId", "/api/schwab/orders/:orderId"], requireSc
 });
 
 async function startServer() {
-  await initRedisCache();
+  initRedisCache();
   app.listen(PORT, () => {
     console.log(`API service listening on port ${PORT}`);
   });
