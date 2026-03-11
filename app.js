@@ -1311,7 +1311,7 @@ function toPlainCompanySnapshot(symbol, quote, report = null) {
   if (fromProfile) return fromProfile;
   const fromOverview = String(report?.overview || "").trim();
   if (fromOverview) return fromOverview;
-  return "Open ticker to load Gradient AI company overview.";
+  return `${getCompanyName(symbol, quote)} in focus; AI summary uses market data and latest headlines.`;
 }
 
 function getTickerCatalystTags(symbol, report, quote) {
@@ -1845,7 +1845,7 @@ function renderTickerIntelView() {
     selectedReport?.companyProfile?.summary ||
       selectedReport?.overview ||
       selectedReport?.narrativeSummary ||
-      "Gradient AI is generating a best-effort company summary."
+      `${selectedCompany || selected} is a publicly traded company influenced by earnings and major news flow.`
   ).trim();
   const profileSource = String(selectedReport?.companyProfile?.source || "gradient-best-effort").trim();
   const profileUpdatedAt = String(selectedReport?.companyProfile?.updatedAt || selectedReport?.asOf || "").trim();
