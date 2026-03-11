@@ -143,6 +143,7 @@ const SYMBOL_COMPANY_NAMES = {
   VZ: "Verizon",
   KHC: "Kraft Heinz",
   CCL: "Carnival",
+  ADM: "Archer-Daniels-Midland Co.",
   SNAP: "Snap",
   PARA: "Paramount Global",
   MMM: "3M",
@@ -1969,6 +1970,16 @@ function renderTickerIntelView() {
   const companyExplainerBullets = Array.isArray(selectedReport?.companyExplainer?.bullets)
     ? selectedReport.companyExplainer.bullets.filter(Boolean).slice(0, 3)
     : [];
+  const workspaceTitle = String(
+    selectedReport?.companyExplainer?.companyName || selectedReport?.companyProfile?.name || selectedCompany || selected
+  ).trim();
+  const workspaceSubtitleRaw = String(
+    selectedReport?.companyExplainer?.oneLiner ||
+      companyExplainerBullets[0] ||
+      selectedReport?.companyProfile?.summary ||
+      companyExplainer
+  ).trim();
+  const workspaceSubtitle = workspaceSubtitleRaw.replace(/^what they do:\s*/i, "");
   const agentPanels = selectedReport?.agentPanels && typeof selectedReport.agentPanels === "object" ? selectedReport.agentPanels : null;
   const companyAgentBullets = Array.isArray(agentPanels?.company) ? agentPanels.company.filter(Boolean).slice(0, 3) : [];
   const catalystAgentBullets = Array.isArray(agentPanels?.catalyst) ? agentPanels.catalyst.filter(Boolean).slice(0, 3) : [];
@@ -2021,8 +2032,8 @@ function renderTickerIntelView() {
     <section class="ticker-workspace-modern">
       <div class="ticker-workspace-header">
         <div>
-          <h3>Ticker Workspace</h3>
-          <p class="schwab-card-sub">Market Coverage stays on the left. Click a ticker to update these details.</p>
+          <h3>${escapeHtml(workspaceTitle || selected)}</h3>
+          <p class="schwab-card-sub">${escapeHtml(workspaceSubtitle || companyExplainer)}</p>
         </div>
         <div class="ticker-source-badges">
           <span class="ticker-catalyst-chip">AI profile: ${escapeHtml(profileSource || "gradient-best-effort")}</span>

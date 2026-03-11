@@ -124,12 +124,20 @@ const SYMBOL_COMPANY_LOOKUP = {
   AVGO: "Broadcom Inc.",
   DAL: "Delta Air Lines",
   CCL: "Carnival Corporation",
+  ADM: "Archer-Daniels-Midland Co.",
   HAL: "Halliburton",
   PH: "Parker-Hannifin",
   CSCO: "Cisco",
   ORCL: "Oracle Corporation",
 };
 const COMPANY_PROFILE_OVERRIDES = {
+  ADM: {
+    name: "Archer-Daniels-Midland Co.",
+    description: "Agricultural processing and nutrition",
+    summary:
+      "ADM buys, stores, processes, and transports crops like corn and soybeans. It sells ingredients for food, animal nutrition, and industrial uses. Investors watch crop margins, global demand, and commodity volatility.",
+    source: "curated-profile",
+  },
   AVGO: {
     name: "Broadcom Inc.",
     description: "Semiconductors and infrastructure software",
@@ -828,6 +836,10 @@ function buildTickerReportFallback(symbol, quote, news, companyProfile = null) {
       asOf: new Date().toISOString(),
     },
     companyExplainer: {
+      companyName: companyProfile?.name || getCompanyLookupName(symbol),
+      oneLiner: companyProfile?.summary
+        ? trimToWords(companyProfile.summary, 18)
+        : `${getCompanyLookupName(symbol)} ${businessHint}`,
       bullets: companyProfile?.summary
         ? [trimToWords(companyProfile.summary, 14)]
         : [
@@ -1161,6 +1173,8 @@ ${JSON.stringify(
 
 Return STRICT JSON:
 {
+  "companyName": "Full company name",
+  "oneLiner": "One sentence on what the company sells or manufactures.",
   "bullets": [
     "What they do: ...",
     "How they make money: ...",
@@ -1171,6 +1185,8 @@ Return STRICT JSON:
 Rules:
 - 2-3 bullets only, plain American English.
 - Keep each bullet under 18 words.
+- `companyName` should be the best full company name you can infer.
+- `oneLiner` must describe what the company sells or manufactures in plain English.
 - Must name concrete products/services the company likely sells or manufactures.
 - Do not use generic phrases like "publicly traded company" or "operates in public markets".
 - No markdown, no extra text.
@@ -1178,7 +1194,16 @@ Rules:
 `,
       });
       const explainerBullets = sanitizeArray(explainerRaw?.bullets, 3);
+      const explainerName = String(explainerRaw?.companyName || companyProfile?.name || getCompanyLookupName(safeSymbol)).trim();
+      const explainerOneLiner = String(explainerRaw?.oneLiner || "").trim();
       companyExplainer = {
+        companyName: explainerName || getCompanyLookupName(safeSymbol),
+        oneLiner:
+          explainerOneLiner ||
+          `${getCompanyLookupName(safeSymbol)} ${buildBusinessHint(
+            safeSymbol,
+            companyProfile?.name || getCompanyLookupName(safeSymbol)
+          )}`,
         bullets: explainerBullets.length
           ? explainerBullets
           : [
@@ -1194,6 +1219,11 @@ Rules:
       };
     } catch {
       companyExplainer = {
+        companyName: companyProfile?.name || getCompanyLookupName(safeSymbol),
+        oneLiner: `${getCompanyLookupName(safeSymbol)} ${buildBusinessHint(
+          safeSymbol,
+          companyProfile?.name || getCompanyLookupName(safeSymbol)
+        )}`,
         bullets: [
           `What they do: ${getCompanyLookupName(safeSymbol)} ${buildBusinessHint(
             safeSymbol,
@@ -2253,7 +2283,7 @@ app.get(["/market/quotes", "/api/market/quotes"], async (req, res) => {
 async function refreshTickerReportCache(symbol, { force = false } = {}) {
   const safeSymbol = normalizeTickerSymbol(symbol);
   if (!safeSymbol) throw new Error("Ticker symbol is required.");
-  const redisKey = buildRedisCacheKey("ticker-report-v4", safeSymbol);
+  const redisKey = buildRedisCacheKey("ticker-report-v5", safeSymbol);
 
   if (!force) {
     const redisCached = await getRedisCacheJson(redisKey);
@@ -2295,7 +2325,7 @@ app.get(["/market/ticker-report", "/api/market/ticker-report"], async (req, res)
     sendJson(res, 400, { error: "symbol query param is required." });
     return;
   }
-  const redisKey = buildRedisCacheKey("ticker-report-v4", symbol);
+  const redisKey = buildRedisCacheKey("ticker-report-v5", symbol);
   const redisCached = await getRedisCacheJson(redisKey);
   if (redisCached) {
     if (parseReportAgeMs(redisCached) > TICKER_REPORT_TTL_MS / 3) backgroundRefreshTickerReport(symbol);
