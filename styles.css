@@ -438,6 +438,21 @@ body {
   margin-bottom: 10px;
 }
 
+.sec-source-cell {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sec-readable-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+.sec-readable-card {
+  margin-top: 10px;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

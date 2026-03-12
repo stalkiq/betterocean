@@ -772,6 +772,29 @@ function buildSecBriefFallback(symbol, companyName, filings = []) {
   };
 }
 
+function buildSecReadableFallback(payload = {}) {
+  const symbol = normalizeTickerSymbol(payload.symbol || "");
+  const companyName = String(payload.companyName || symbol || "Company").trim();
+  const form = String(payload.form || "SEC").toUpperCase();
+  const filingDate = String(payload.filingDate || "").trim() || "recent date";
+  const description = String(payload.description || "").trim();
+  const topic = String(payload.topic || "SEC filing").trim();
+  const importance = String(payload.importance || "Low").trim();
+  const sourceUrl = String(payload.secUrl || "").trim();
+  return {
+    symbol: symbol || companyName,
+    headline: `${companyName} ${form} filing in plain English`,
+    bullets: [
+      `${companyName} filed ${form} with the SEC on ${filingDate}.`,
+      description ? trimToWords(description, 22) : `${topic} update was recorded in SEC data.`,
+      `Importance in this feed is marked ${importance}. Review source filing for full legal detail.`,
+    ],
+    source: "fallback",
+    sourceUrl,
+    asOf: new Date().toISOString(),
+  };
+}
+
 function getSecImportanceForFiling(form, description = "") {
   const safeForm = String(form || "").toUpperCase().trim();
   const text = String(description || "").toLowerCase();
@@ -3042,6 +3065,83 @@ app.get(["/market/sec-grid", "/api/market/sec-grid"], async (req, res) => {
     sendJson(res, 200, response);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to build SEC grid." });
+  }
+});
+
+app.post(["/market/sec-readable", "/api/market/sec-readable"], async (req, res) => {
+  const payload = req.body && typeof req.body === "object" ? req.body : {};
+  const symbol = normalizeTickerSymbol(payload.symbol || "");
+  const companyName = String(payload.companyName || symbol || "").trim();
+  const form = String(payload.form || "SEC").trim().toUpperCase();
+  const filingDate = String(payload.filingDate || "").trim();
+  const description = String(payload.description || "").trim();
+  const topic = String(payload.topic || "").trim();
+  const importance = String(payload.importance || "").trim();
+  const sourceUrl = String(payload.secUrl || "").trim();
+
+  const fallback = buildSecReadableFallback({
+    symbol,
+    companyName,
+    form,
+    filingDate,
+    description,
+    topic,
+    importance,
+    secUrl: sourceUrl,
+  });
+
+  const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
+  const key = process.env.GRADIENT_AGENT_KEY;
+  if (!endpoint || !key) {
+    sendJson(res, 200, fallback);
+    return;
+  }
+
+  try {
+    const base = endpoint.replace(/\/+$/, "");
+    const completionsUrl = base.includes("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const model = process.env.GRADIENT_MODEL || "openai-gpt-oss-120b";
+    const aiRaw = await gradientStructuredJson({
+      completionsUrl,
+      key,
+      model,
+      systemPrompt:
+        "You translate SEC filing facts into plain American English for beginner investors. Return strict JSON only.",
+      userPrompt: `
+Symbol: ${symbol || "unknown"}
+Company: ${companyName || "unknown"}
+Form: ${form}
+Filed Date: ${filingDate || "unknown"}
+Importance: ${importance || "unknown"}
+Topic: ${topic || "unknown"}
+Description: ${description || "none"}
+Source URL: ${sourceUrl || "none"}
+
+Return STRICT JSON:
+{
+  "headline": "string",
+  "bullets": ["string", "string", "string"]
+}
+
+Rules:
+- Plain American English only.
+- Keep each bullet under 18 words.
+- Explain what happened, why it matters, and one thing to watch.
+- No markdown. No extra keys.
+`,
+    });
+    const response = {
+      symbol: symbol || fallback.symbol,
+      headline: String(aiRaw?.headline || fallback.headline).trim(),
+      bullets: sanitizeArray(aiRaw?.bullets, 4),
+      source: "gradient",
+      sourceUrl,
+      asOf: new Date().toISOString(),
+    };
+    if (!response.bullets.length) response.bullets = fallback.bullets;
+    sendJson(res, 200, response);
+  } catch {
+    sendJson(res, 200, fallback);
   }
 });
 

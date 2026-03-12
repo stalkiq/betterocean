@@ -139,6 +139,10 @@ let secTabState = {
   error: "",
   rows: [],
   meta: null,
+  readable: null,
+  readableLoadingRowId: "",
+  readableError: "",
+  readableCache: {},
   fetchedAt: 0,
   cache: {},
   cacheAt: {},
@@ -477,6 +481,35 @@ async function loadSecBrief(options = {}) {
     fetchedAt: Date.now(),
     cache: append ? secTabState.cache : { ...secTabState.cache, [cacheKey]: { ...payload, rows: mergedRows } },
     cacheAt: append ? secTabState.cacheAt : { ...secTabState.cacheAt, [cacheKey]: Date.now() },
+  };
+  return payload;
+}
+
+async function loadSecReadableSummary(row, options = {}) {
+  const { force = false } = options;
+  const rowId = String(row?.rowId || "");
+  if (!rowId) throw new Error("SEC row is missing an id.");
+  const cached = secTabState.readableCache?.[rowId];
+  if (!force && cached) return cached;
+  const payload = await schwabApi("/api/market/sec-readable", {
+    method: "POST",
+    body: JSON.stringify({
+      symbol: row?.symbol || "",
+      companyName: row?.companyName || "",
+      form: row?.form || "",
+      filingDate: row?.filingDate || "",
+      description: row?.description || "",
+      topic: row?.topic || "",
+      importance: row?.importance || "",
+      secUrl: row?.secUrl || "",
+    }),
+  });
+  secTabState = {
+    ...secTabState,
+    readableCache: {
+      ...(secTabState.readableCache || {}),
+      [rowId]: payload,
+    },
   };
   return payload;
 }
@@ -4085,10 +4118,14 @@ function renderSecView() {
   const allRows = Array.isArray(secTabState.rows) ? secTabState.rows : [];
   const category = String(secTabState.category || "all").toLowerCase();
   const visibleRows = allRows;
+  const readable = secTabState.readable && typeof secTabState.readable === "object" ? secTabState.readable : null;
+  const readableBullets = Array.isArray(readable?.bullets) ? readable.bullets.slice(0, 4) : [];
   const rowHtml = visibleRows.length
     ? visibleRows
         .map((row, index) => {
           const impactClass = String(row.importance || "").toLowerCase();
+          const rowId = String(row.rowId || `${row.symbol || "sec"}-${index}`);
+          const readingThisRow = secTabState.readableLoadingRowId === rowId;
           return `
           <tr>
             <td class="sec-row-index">${index + 1}</td>
@@ -4100,7 +4137,12 @@ function renderSecView() {
             <td><span class="sec-impact ${impactClass}">${escapeHtml(row.importance || "Low")}</span></td>
             <td>${escapeHtml(row.topic || "-")}</td>
             <td>${escapeHtml(row.aiSummary || row.description || "-")}</td>
-            <td>${row.secUrl ? `<a href="${escapeHtml(row.secUrl)}" target="_blank" rel="noopener noreferrer">Open</a>` : "-"}</td>
+            <td class="sec-source-cell">
+              <button type="button" class="refresh-btn sec-readable-btn" data-sec-readable-idx="${index}" ${readingThisRow ? "disabled" : ""}>
+                ${readingThisRow ? "Reading..." : "Readable"}
+              </button>
+              ${row.secUrl ? `<a href="${escapeHtml(row.secUrl)}" target="_blank" rel="noopener noreferrer">SEC</a>` : "-"}
+            </td>
           </tr>
         `;
         })
@@ -4145,6 +4187,27 @@ function renderSecView() {
         </thead>
         <tbody>${errorRow}${rowHtml}${loadingMoreRow}</tbody>
       </table>
+    </section>
+    <section class="schwab-card sec-readable-card">
+      <h4>${escapeHtml(readable?.headline || "Plain English Filing Brief")}</h4>
+      <p class="schwab-card-sub">${
+        readable
+          ? `${escapeHtml(readable?.symbol || "")} ${escapeHtml(readable?.form || "")} ${escapeHtml(readable?.filingDate || "")}`.trim()
+          : "Click Readable on any row to get a plain-English summary."
+      }</p>
+      ${
+        secTabState.readableError
+          ? `<div class="do-error"><strong>Error</strong><p>${escapeHtml(secTabState.readableError)}</p></div>`
+          : ""
+      }
+      <ul class="ticker-bullets">
+        ${(readableBullets.length ? readableBullets : ["No brief loaded yet."]).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
+      </ul>
+      ${
+        readable?.sourceUrl
+          ? `<a href="${escapeHtml(readable.sourceUrl)}" target="_blank" rel="noopener noreferrer">Open SEC source</a>`
+          : ""
+      }
     </section>
   `;
 
@@ -4203,6 +4266,47 @@ function renderSecView() {
         });
     });
   }
+
+  workspaceTableWrap.querySelectorAll("[data-sec-readable-idx]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const idx = Number(btn.getAttribute("data-sec-readable-idx"));
+      const row = visibleRows[idx];
+      if (!row) return;
+      const rowId = String(row.rowId || `${row.symbol || "sec"}-${idx}`);
+      secTabState = {
+        ...secTabState,
+        readableLoadingRowId: rowId,
+        readableError: "",
+      };
+      renderSecView();
+      loadSecReadableSummary(row)
+        .then((payload) => {
+          secTabState = {
+            ...secTabState,
+            readableLoadingRowId: "",
+            readableError: "",
+            readable: {
+              rowId,
+              symbol: row.symbol || "",
+              form: row.form || "",
+              filingDate: row.filingDate || "",
+              headline: String(payload?.headline || "Plain English Filing Brief"),
+              bullets: Array.isArray(payload?.bullets) ? payload.bullets : [],
+              sourceUrl: String(payload?.sourceUrl || row.secUrl || ""),
+            },
+          };
+          if (currentTab === SEC_TAB) renderSecView();
+        })
+        .catch((error) => {
+          secTabState = {
+            ...secTabState,
+            readableLoadingRowId: "",
+            readableError: error.message || "Failed to build readable SEC brief.",
+          };
+          if (currentTab === SEC_TAB) renderSecView();
+        });
+    });
+  });
 }
 
 function renderShoppingView() {
