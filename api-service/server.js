@@ -782,6 +782,60 @@ function buildSecAiSummary(companyName, filing) {
   return `${companyName} filed ${form || "an SEC form"}. Review source details for context.`;
 }
 
+function mapCategoryToFallbackForm(category = "all") {
+  const safe = String(category || "all").toLowerCase();
+  if (safe === "10k" || safe === "10k-annual") return "10-K";
+  if (safe === "10q") return "10-Q";
+  if (safe === "8k") return "8-K";
+  if (safe === "def14a") return "DEF 14A";
+  return "SEC";
+}
+
+function buildSecMetaFallbackRows({
+  safeSymbols = [],
+  metaMap = {},
+  nameMap = {},
+  category = "all",
+  limit = 120,
+  offset = 0,
+}) {
+  const safeCategory = String(category || "all").trim().toLowerCase();
+  const fallbackForm = mapCategoryToFallbackForm(safeCategory);
+  const fallbackTopic = safeCategory === "military" ? "Military / Defense" : "SEC Registry";
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = safeSymbols.map((symbol) => {
+    const meta = metaMap?.[symbol] || null;
+    const companyName = String(meta?.name || nameMap?.[symbol] || getCompanyLookupName(symbol) || symbol).trim();
+    const cik = formatSecCik(meta?.cik || "");
+    return {
+      rowId: `${symbol}:sec-meta`,
+      symbol,
+      companyName,
+      cik: cik || null,
+      form: fallbackForm,
+      filingDate: today,
+      daysAgo: 0,
+      importance: "Low",
+      importanceScore: 1,
+      topic: fallbackTopic,
+      description: "SEC company directory metadata row.",
+      aiSummary: `${companyName} is listed in SEC company tickers metadata.`,
+      secUrl: cik ? `https://data.sec.gov/submissions/CIK${cik}.json` : "https://www.sec.gov/files/company_tickers.json",
+    };
+  });
+  const total = rows.length;
+  const pageSize = Math.max(20, Math.min(400, Number(limit) || 120));
+  const safeOffset = Math.max(0, Number(offset) || 0);
+  const page = rows.slice(safeOffset, safeOffset + pageSize);
+  return {
+    rows: page,
+    total,
+    offset: safeOffset,
+    nextOffset: safeOffset + page.length,
+    hasMore: safeOffset + page.length < total,
+  };
+}
+
 async function buildSecGridRows({
   symbols = [],
   limit = 120,
@@ -882,6 +936,27 @@ async function buildSecGridRows({
     });
   const nextOffset = safeOffset + sorted.length;
   const hasMore = nextOffset < total;
+
+  if (!sorted.length) {
+    const fallback = buildSecMetaFallbackRows({
+      safeSymbols,
+      metaMap,
+      nameMap,
+      category: safeCategory,
+      limit,
+      offset: safeOffset,
+    });
+    return {
+      rows: fallback.rows,
+      total: fallback.total,
+      offset: fallback.offset,
+      nextOffset: fallback.nextOffset,
+      hasMore: fallback.hasMore,
+      category: safeCategory || "all",
+      failures,
+      asOf: new Date().toISOString(),
+    };
+  }
 
   return {
     rows: sorted,
