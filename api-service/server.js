@@ -23,6 +23,7 @@ const MARKET_OVERVIEW_TTL_MS = Number(process.env.MARKET_OVERVIEW_TTL_MS || 20 *
 const OPENING_PLAYBOOK_TTL_MS = Number(process.env.OPENING_PLAYBOOK_TTL_MS || 90 * 1000);
 const TICKER_REPORT_TTL_MS = Number(process.env.TICKER_REPORT_TTL_MS || 5 * 60 * 1000);
 const TICKER_REPORT_CACHE_SCOPE = "ticker-report-v6";
+const SEC_BRIEF_TTL_MS = Number(process.env.SEC_BRIEF_TTL_MS || 15 * 60 * 1000);
 const TICKER_WATCHBOARDS_TTL_MS = Number(process.env.TICKER_WATCHBOARDS_TTL_MS || 3 * 60 * 1000);
 const AGENT_BRIEF_TTL_MS = Number(process.env.AGENT_BRIEF_TTL_MS || 3 * 60 * 1000);
 const SCHWAB_CACHE_TTL_MS = Number(process.env.SCHWAB_CACHE_TTL_MS || 12 * 1000);
@@ -34,6 +35,7 @@ const REDIS_CACHE_PREFIX = process.env.REDIS_CACHE_PREFIX || "bo:cache:v1";
 const sessionStore = new Map();
 const tickerUniverseCache = { symbols: [], fetchedAt: 0 };
 const secCompanyTickerCache = { bySymbol: {}, fetchedAt: 0 };
+const secCompanyMetaCache = { bySymbol: {}, fetchedAt: 0 };
 const marketOverviewCache = { data: null, fetchedAt: 0 };
 const openingPlaybookCache = { data: null, fetchedAt: 0 };
 const tickerWatchboardsCache = { data: null, fetchedAt: 0 };
@@ -601,6 +603,240 @@ function parseSecCompanyTickerJson(rawData) {
     bySymbol[symbol] = title;
   });
   return bySymbol;
+}
+
+function formatSecCik(value) {
+  const digits = String(value || "")
+    .replace(/\D/g, "")
+    .slice(0, 10);
+  return digits ? digits.padStart(10, "0") : "";
+}
+
+function parseSecCompanyMetaJson(rawData) {
+  const parsed = JSON.parse(String(rawData || "{}"));
+  const bySymbol = {};
+  if (!parsed || typeof parsed !== "object") return bySymbol;
+  Object.values(parsed).forEach((entry) => {
+    const symbol = normalizeTickerSymbol(entry?.ticker || "");
+    const title = String(entry?.title || "").trim();
+    const cik = formatSecCik(entry?.cik_str || "");
+    if (!symbol || !title || !cik) return;
+    bySymbol[symbol] = { symbol, name: title, cik };
+  });
+  return bySymbol;
+}
+
+async function loadSecCompanyMetaMap() {
+  const now = Date.now();
+  if (Object.keys(secCompanyMetaCache.bySymbol).length && now - secCompanyMetaCache.fetchedAt < SEC_COMPANY_TICKERS_TTL_MS) {
+    return secCompanyMetaCache.bySymbol;
+  }
+
+  const redisKey = buildRedisCacheKey("sec-company-meta-v1");
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached && typeof redisCached.bySymbol === "object" && redisCached.bySymbol !== null) {
+    secCompanyMetaCache.bySymbol = redisCached.bySymbol;
+    secCompanyMetaCache.fetchedAt = now;
+    return secCompanyMetaCache.bySymbol;
+  }
+
+  try {
+    const upstream = await getText("https://www.sec.gov/files/company_tickers.json", {
+      "User-Agent": "BetterOcean/1.0 (support@betterocean.app)",
+      Accept: "application/json",
+    });
+    if (upstream.status < 200 || upstream.status >= 300) {
+      throw new Error(`SEC company meta request failed (${upstream.status})`);
+    }
+    const bySymbol = parseSecCompanyMetaJson(upstream.data);
+    if (Object.keys(bySymbol).length) {
+      secCompanyMetaCache.bySymbol = bySymbol;
+      secCompanyMetaCache.fetchedAt = now;
+      await setRedisCacheJson(redisKey, { bySymbol, updatedAt: new Date().toISOString() }, SEC_COMPANY_TICKERS_TTL_MS);
+      return bySymbol;
+    }
+  } catch {
+    // Fall through to in-memory fallback.
+  }
+
+  return secCompanyMetaCache.bySymbol;
+}
+
+function buildSecFilingLink(cik, accession, primaryDocument) {
+  const numericCik = String(cik || "").replace(/^0+/, "");
+  const accNoDashes = String(accession || "").replace(/-/g, "");
+  const doc = String(primaryDocument || "").trim();
+  if (!numericCik || !accNoDashes || !doc) return "";
+  return `https://www.sec.gov/Archives/edgar/data/${numericCik}/${accNoDashes}/${doc}`;
+}
+
+function extractRecentSecFilings(submissionsPayload, cik, limit = 8) {
+  const recent = submissionsPayload?.filings?.recent || {};
+  const forms = Array.isArray(recent.form) ? recent.form : [];
+  const filingDates = Array.isArray(recent.filingDate) ? recent.filingDate : [];
+  const accessionNumbers = Array.isArray(recent.accessionNumber) ? recent.accessionNumber : [];
+  const primaryDocs = Array.isArray(recent.primaryDocument) ? recent.primaryDocument : [];
+  const descriptions = Array.isArray(recent.primaryDocDescription) ? recent.primaryDocDescription : [];
+  const reportDates = Array.isArray(recent.reportDate) ? recent.reportDate : [];
+  const acceptanceDateTimes = Array.isArray(recent.acceptanceDateTime) ? recent.acceptanceDateTime : [];
+
+  const out = [];
+  for (let i = 0; i < forms.length && out.length < limit; i += 1) {
+    const form = String(forms[i] || "").trim();
+    const filingDate = String(filingDates[i] || "").trim();
+    const accessionNumber = String(accessionNumbers[i] || "").trim();
+    const primaryDocument = String(primaryDocs[i] || "").trim();
+    if (!form || !filingDate || !accessionNumber) continue;
+    out.push({
+      form,
+      filingDate,
+      reportDate: String(reportDates[i] || "").trim(),
+      acceptedAt: String(acceptanceDateTimes[i] || "").trim(),
+      accessionNumber,
+      primaryDocument,
+      description: String(descriptions[i] || "").trim(),
+      secUrl: buildSecFilingLink(cik, accessionNumber, primaryDocument),
+    });
+  }
+  return out;
+}
+
+async function fetchSecSubmissionsByCik(cik) {
+  const safeCik = formatSecCik(cik);
+  if (!safeCik) return null;
+  const upstream = await getText(`https://data.sec.gov/submissions/CIK${safeCik}.json`, {
+    "User-Agent": "BetterOcean/1.0 (support@betterocean.app)",
+    Accept: "application/json",
+  });
+  if (upstream.status < 200 || upstream.status >= 300) {
+    throw new Error(`SEC submissions request failed (${upstream.status})`);
+  }
+  return safeParseJson(upstream.data || "{}") || {};
+}
+
+function buildSecBriefFallback(symbol, companyName, filings = []) {
+  const latest = filings[0] || null;
+  const latestLine = latest
+    ? `${latest.form} filed on ${latest.filingDate}${latest.description ? ` (${latest.description})` : ""}.`
+    : "No recent SEC filing entries were returned for this symbol.";
+  return {
+    headline: `${companyName} SEC filing digest`,
+    bullets: [
+      latestLine,
+      "Use 10-Q and 10-K filings to validate revenue, margins, and debt trends.",
+      "Use 8-K filings to monitor material updates that can move the stock quickly.",
+    ],
+    watchItems: ["Revenue trend", "Guidance changes", "Risk factor updates"],
+    source: "fallback",
+    asOf: new Date().toISOString(),
+  };
+}
+
+async function buildSecBrief(symbol) {
+  const safeSymbol = normalizeTickerSymbol(symbol);
+  if (!safeSymbol) {
+    const err = new Error("A valid ticker symbol is required.");
+    err.status = 400;
+    throw err;
+  }
+
+  const metaMap = await loadSecCompanyMetaMap().catch(() => ({}));
+  const resolvedNames = await resolveCompanyNamesForSymbols([safeSymbol]).catch(() => ({}));
+  const secMeta = metaMap?.[safeSymbol] || null;
+  const companyName = String(secMeta?.name || resolvedNames?.[safeSymbol] || getCompanyLookupName(safeSymbol) || safeSymbol).trim();
+  const cik = formatSecCik(secMeta?.cik || "");
+
+  let filings = [];
+  let secSource = "sec";
+  try {
+    if (cik) {
+      const submissions = await fetchSecSubmissionsByCik(cik);
+      filings = extractRecentSecFilings(submissions, cik, 8);
+    }
+  } catch {
+    secSource = "sec-unavailable";
+  }
+
+  const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
+  const key = process.env.GRADIENT_AGENT_KEY;
+  if (!endpoint || !key) {
+    const fallback = buildSecBriefFallback(safeSymbol, companyName, filings);
+    return {
+      symbol: safeSymbol,
+      companyName,
+      cik: cik || null,
+      filings,
+      summary: fallback,
+      source: `${secSource}+fallback`,
+      asOf: new Date().toISOString(),
+    };
+  }
+
+  try {
+    const base = endpoint.replace(/\/+$/, "");
+    const completionsUrl = base.includes("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+    const model = process.env.GRADIENT_MODEL || "openai-gpt-oss-120b";
+    const aiRaw = await gradientStructuredJson({
+      completionsUrl,
+      key,
+      model,
+      systemPrompt:
+        "You are an SEC filing analyst for beginner investors. Use SEC filing metadata only. Return strict JSON only.",
+      userPrompt: `
+Symbol: ${safeSymbol}
+Company: ${companyName}
+CIK: ${cik || "unknown"}
+Recent filings JSON:
+${JSON.stringify(filings.slice(0, 8), null, 2)}
+
+Return STRICT JSON:
+{
+  "headline": "short title",
+  "bullets": ["string", "string", "string"],
+  "watchItems": ["string", "string", "string"]
+}
+
+Rules:
+- Plain American English.
+- Keep bullets concise (under 18 words each).
+- Mention specific SEC form types when useful (10-K, 10-Q, 8-K).
+- No markdown, no extra text.
+`,
+    });
+    const summary = {
+      headline: String(aiRaw?.headline || `${companyName} SEC filing digest`).trim(),
+      bullets: sanitizeArray(aiRaw?.bullets, 4),
+      watchItems: sanitizeArray(aiRaw?.watchItems, 4),
+      source: "gradient",
+      asOf: new Date().toISOString(),
+    };
+    if (!summary.bullets.length || !summary.watchItems.length) {
+      const fallback = buildSecBriefFallback(safeSymbol, companyName, filings);
+      summary.bullets = summary.bullets.length ? summary.bullets : fallback.bullets;
+      summary.watchItems = summary.watchItems.length ? summary.watchItems : fallback.watchItems;
+      summary.source = "gradient+fallback";
+    }
+    return {
+      symbol: safeSymbol,
+      companyName,
+      cik: cik || null,
+      filings,
+      summary,
+      source: `${secSource}+${summary.source}`,
+      asOf: new Date().toISOString(),
+    };
+  } catch {
+    const fallback = buildSecBriefFallback(safeSymbol, companyName, filings);
+    return {
+      symbol: safeSymbol,
+      companyName,
+      cik: cik || null,
+      filings,
+      summary: fallback,
+      source: `${secSource}+fallback`,
+      asOf: new Date().toISOString(),
+    };
+  }
 }
 
 async function loadSecCompanyTickerMap() {
@@ -2415,6 +2651,31 @@ app.get(["/market/company-names", "/api/market/company-names"], async (req, res)
     });
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to load company names." });
+  }
+});
+
+app.get(["/market/sec-brief", "/api/market/sec-brief"], async (req, res) => {
+  const symbol = normalizeTickerSymbol(req.query.symbol || "");
+  const force = /^(1|true|yes)$/i.test(String(req.query.force || "").trim());
+  if (!symbol) {
+    sendJson(res, 400, { error: "symbol query param is required." });
+    return;
+  }
+  const redisKey = buildRedisCacheKey("sec-brief-v1", symbol);
+  if (!force) {
+    const redisCached = await getRedisCacheJson(redisKey);
+    if (redisCached) {
+      sendJson(res, 200, redisCached);
+      return;
+    }
+  }
+
+  try {
+    const payload = await buildSecBrief(symbol);
+    await setRedisCacheJson(redisKey, payload, SEC_BRIEF_TTL_MS);
+    sendJson(res, 200, payload);
+  } catch (err) {
+    sendJson(res, err.status || 502, { error: err.message || "Failed to build SEC brief." });
   }
 });
 

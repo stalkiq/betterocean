@@ -21,6 +21,7 @@ const PORTFOLIO_TAB = "My Holdings";
 const INVESTMENTS_TAB = "Investments";
 const TICKER_INTEL_TAB = "Ticker Intel";
 const TIME_TAB = "Time";
+const SEC_TAB = "SEC";
 const SHOPPING_TAB = "Shopping";
 const TICKER_DETAIL_TAB_PREFIX = "Ticker ";
 const HOME_TAB = SCHWAB_CONNECT_TAB;
@@ -31,6 +32,7 @@ const TAB_THEME_CLASS_MAP = {
   [INVESTMENTS_TAB]: "theme-investments",
   [TICKER_INTEL_TAB]: "theme-ticker-intel",
   [TIME_TAB]: "theme-time",
+  [SEC_TAB]: "theme-time",
   [SHOPPING_TAB]: "theme-shopping",
 };
 const RESPONSE_STYLE_PROMPT =
@@ -47,6 +49,7 @@ const TICKER_INITIAL_UNIVERSE_LIMIT = 220;
 const TICKER_DEFAULT_VISIBLE_COUNT = 90;
 const TICKER_VISIBLE_INCREMENT = 60;
 const AGENT_BRIEF_TTL_MS = 3 * 60 * 1000;
+const SEC_BRIEF_TAB_TTL_MS = 10 * 60 * 1000;
 
 const AGENTS = [
   {
@@ -111,7 +114,7 @@ const AGENTS = [
 const AGENT_BY_ID = Object.fromEntries(AGENTS.map((agent) => [agent.id, agent]));
 const AGENT_BY_TAB = Object.fromEntries(AGENTS.map((agent) => [agent.tab, agent]));
 
-const openTabs = new Set([HOME_TAB, PORTFOLIO_TAB, INVESTMENTS_TAB, TICKER_INTEL_TAB, TIME_TAB]);
+const openTabs = new Set([HOME_TAB, PORTFOLIO_TAB, INVESTMENTS_TAB, TICKER_INTEL_TAB, TIME_TAB, SEC_TAB]);
 let currentTab = HOME_TAB;
 let currentAgentId = AGENTS[0].id;
 const announcedAgents = new Set();
@@ -122,6 +125,16 @@ let schwabData = { accounts: null, openOrders: null, accountError: "" };
 let investmentsMarket = { assets: [], updatedAt: null, beginnerBrief: null };
 let openingPlaybook = { buckets: [], asOf: null, agentBriefs: null };
 let openingQuotesBySymbol = {};
+let secTabState = {
+  symbol: "AAPL",
+  loading: false,
+  error: "",
+  data: null,
+  fetchedAt: 0,
+  cache: {},
+  cacheAt: {},
+};
+const SEC_QUICK_SYMBOLS = ["AAPL", "MSFT", "NVDA", "EXE", "ADM", "TSLA"];
 const DEFAULT_TICKER_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH"];
 const SHOPPING_10_TO_50_SYMBOLS = ["F", "PFE", "BAC", "INTC", "T", "VZ", "KHC", "CCL", "SNAP", "PARA"];
 const SYMBOL_COMPANY_NAMES = {
@@ -378,6 +391,45 @@ async function loadOpeningPlaybook() {
     agentBriefs: data?.agentBriefs && typeof data.agentBriefs === "object" ? data.agentBriefs : null,
   };
   return openingPlaybook;
+}
+
+async function loadSecBrief(symbol = "AAPL", options = {}) {
+  const { force = false } = options;
+  const safeSymbol = String(symbol || "")
+    .trim()
+    .toUpperCase();
+  if (!safeSymbol) throw new Error("Ticker symbol is required.");
+
+  const cached = secTabState.cache[safeSymbol];
+  const cachedAt = Number(secTabState.cacheAt[safeSymbol] || 0);
+  if (!force && cached && Date.now() - cachedAt < SEC_BRIEF_TAB_TTL_MS) {
+    secTabState = {
+      ...secTabState,
+      symbol: safeSymbol,
+      loading: false,
+      error: "",
+      data: cached,
+      fetchedAt: cachedAt,
+    };
+    return cached;
+  }
+
+  const payload = await schwabApi(
+    `/api/market/sec-brief?symbol=${encodeURIComponent(safeSymbol)}${force ? "&force=1" : ""}`,
+    { method: "GET" }
+  );
+
+  secTabState = {
+    ...secTabState,
+    symbol: safeSymbol,
+    loading: false,
+    error: "",
+    data: payload,
+    fetchedAt: Date.now(),
+    cache: { ...secTabState.cache, [safeSymbol]: payload },
+    cacheAt: { ...secTabState.cacheAt, [safeSymbol]: Date.now() },
+  };
+  return payload;
 }
 
 async function loadTickerIntelReport(symbol, options = {}) {
@@ -3488,7 +3540,8 @@ function isPermanentTab(tabName) {
     tabName === PORTFOLIO_TAB ||
     tabName === INVESTMENTS_TAB ||
     tabName === TICKER_INTEL_TAB ||
-    tabName === TIME_TAB
+    tabName === TIME_TAB ||
+    tabName === SEC_TAB
   );
 }
 
@@ -3972,6 +4025,161 @@ function renderSchwabConnectView() {
     formId: "tradeTicketForm",
     statusId: "tradeTicketStatus",
     fundingHintId: "tradeFundingHint",
+  });
+}
+
+function renderSecLoading(symbol = "AAPL") {
+  workspaceTableWrap.innerHTML = `<div class="do-loading">Loading SEC + Gradient brief for ${escapeHtml(symbol)}...</div>`;
+}
+
+function renderSecView() {
+  const symbol = String(secTabState.symbol || "AAPL").toUpperCase();
+  const data = secTabState.data || null;
+  const filings = Array.isArray(data?.filings) ? data.filings : [];
+  const summary = data?.summary && typeof data.summary === "object" ? data.summary : null;
+  const filingRows = filings.length
+    ? filings
+        .slice(0, 8)
+        .map(
+          (item) => `
+      <tr>
+        <td>${escapeHtml(item.form || "-")}</td>
+        <td>${escapeHtml(item.filingDate || "-")}</td>
+        <td>${escapeHtml(item.description || "-")}</td>
+        <td>${item.secUrl ? `<a href="${escapeHtml(item.secUrl)}" target="_blank" rel="noopener noreferrer">Open filing</a>` : "-"}</td>
+      </tr>
+    `
+        )
+        .join("")
+    : '<tr><td colspan="4">No recent SEC filings found for this symbol.</td></tr>';
+  const bullets = Array.isArray(summary?.bullets) ? summary.bullets.slice(0, 4) : [];
+  const watchItems = Array.isArray(summary?.watchItems) ? summary.watchItems.slice(0, 4) : [];
+  const quickChips = SEC_QUICK_SYMBOLS.map(
+    (chip) => `<button type="button" class="watchboard-chip ${chip === symbol ? "active" : ""}" data-sec-symbol="${chip}">${chip}</button>`
+  ).join("");
+
+  workspaceTableWrap.innerHTML = `
+    <div class="agent-view">
+      <section class="agent-hero">
+        <h3>SEC Filing Intelligence</h3>
+        <p>Use SEC filings plus Gradient AI summaries to understand what changed and why it matters.</p>
+      </section>
+      <section class="schwab-card">
+        <form id="secBriefForm" class="ticker-filters-inline">
+          <input id="secBriefSymbolInput" value="${escapeHtml(symbol)}" maxlength="12" placeholder="Ticker symbol (ex: AAPL)" />
+          <button type="submit" class="refresh-btn">Load SEC Brief</button>
+          <button type="button" id="secBriefForceBtn" class="refresh-btn">Refresh from SEC</button>
+        </form>
+        <div class="watchboard-chip-row">${quickChips}</div>
+      </section>
+      ${
+        secTabState.error
+          ? `<div class="do-error"><strong>Error</strong><p>${escapeHtml(secTabState.error)}</p></div>`
+          : `
+      <section class="schwab-metrics">
+        <article class="schwab-metric-card">
+          <h4>Company</h4>
+          <div class="schwab-metric-value small">${escapeHtml(data?.companyName || symbol)}</div>
+        </article>
+        <article class="schwab-metric-card">
+          <h4>CIK</h4>
+          <div class="schwab-metric-value small">${escapeHtml(data?.cik || "n/a")}</div>
+        </article>
+        <article class="schwab-metric-card">
+          <h4>Latest filing</h4>
+          <div class="schwab-metric-value small">${escapeHtml(filings[0]?.form || "n/a")} · ${escapeHtml(
+            filings[0]?.filingDate || "n/a"
+          )}</div>
+        </article>
+      </section>
+      <section class="schwab-grid">
+        <article class="schwab-card">
+          <h4>${escapeHtml(summary?.headline || "Gradient SEC summary")}</h4>
+          <ul class="ticker-bullets">
+            ${(bullets.length ? bullets : ["No summary bullets yet."]).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
+          </ul>
+        </article>
+        <article class="schwab-card">
+          <h4>What to watch</h4>
+          <ul class="ticker-bullets">
+            ${(watchItems.length ? watchItems : ["Monitor next 10-Q, 10-K, and 8-K updates."])
+              .map((line) => `<li>${escapeHtml(line)}</li>`)
+              .join("")}
+          </ul>
+        </article>
+      </section>
+      <section class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Form</th>
+              <th>Filing date</th>
+              <th>Description</th>
+              <th>Source</th>
+            </tr>
+          </thead>
+          <tbody>${filingRows}</tbody>
+        </table>
+      </section>
+      `
+      }
+    </div>
+  `;
+
+  const form = document.getElementById("secBriefForm");
+  const symbolInput = document.getElementById("secBriefSymbolInput");
+  const forceBtn = document.getElementById("secBriefForceBtn");
+  form?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const nextSymbol = String(symbolInput?.value || "")
+      .trim()
+      .toUpperCase();
+    if (!nextSymbol) return;
+    secTabState = { ...secTabState, symbol: nextSymbol, loading: true, error: "" };
+    renderSecLoading(nextSymbol);
+    loadSecBrief(nextSymbol)
+      .then(() => {
+        if (currentTab === SEC_TAB) renderSecView();
+      })
+      .catch((error) => {
+        secTabState = { ...secTabState, loading: false, error: error.message || "Failed to load SEC brief." };
+        if (currentTab === SEC_TAB) renderSecView();
+      });
+  });
+  forceBtn?.addEventListener("click", () => {
+    const nextSymbol = String(symbolInput?.value || symbol)
+      .trim()
+      .toUpperCase();
+    if (!nextSymbol) return;
+    secTabState = { ...secTabState, symbol: nextSymbol, loading: true, error: "" };
+    renderSecLoading(nextSymbol);
+    loadSecBrief(nextSymbol, { force: true })
+      .then(() => {
+        if (currentTab === SEC_TAB) renderSecView();
+      })
+      .catch((error) => {
+        secTabState = { ...secTabState, loading: false, error: error.message || "Failed to refresh SEC brief." };
+        if (currentTab === SEC_TAB) renderSecView();
+      });
+  });
+
+  workspaceTableWrap.querySelectorAll("[data-sec-symbol]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const nextSymbol = String(button.getAttribute("data-sec-symbol") || "")
+        .trim()
+        .toUpperCase();
+      if (!nextSymbol) return;
+      secTabState = { ...secTabState, symbol: nextSymbol, loading: true, error: "" };
+      renderSecLoading(nextSymbol);
+      loadSecBrief(nextSymbol)
+        .then(() => {
+          if (currentTab === SEC_TAB) renderSecView();
+        })
+        .catch((error) => {
+          secTabState = { ...secTabState, loading: false, error: error.message || "Failed to load SEC brief." };
+          if (currentTab === SEC_TAB) renderSecView();
+        });
+    });
   });
 }
 
@@ -4539,6 +4747,7 @@ function activateTab(tabName) {
     tabName !== INVESTMENTS_TAB &&
     tabName !== TICKER_INTEL_TAB &&
     tabName !== TIME_TAB &&
+    tabName !== SEC_TAB &&
     tabName !== SHOPPING_TAB &&
     !isTickerDetailTab(tabName)
   ) {
@@ -4569,6 +4778,8 @@ function activateTab(tabName) {
             ? "Market coverage list + inline ticker workspace"
         : tabName === TIME_TAB
           ? "Market open countdown + AI playbook"
+      : tabName === SEC_TAB
+        ? "SEC filings + Gradient AI digest"
       : tabName === SHOPPING_TAB
         ? "Build and submit buy/sell cart orders"
       : isTickerDetailTab(tabName)
@@ -4819,6 +5030,33 @@ function activateTab(tabName) {
       });
     return;
   }
+  if (tabName === SEC_TAB) {
+    const targetTab = SEC_TAB;
+    const selectedSymbol = String(secTabState.symbol || "AAPL")
+      .trim()
+      .toUpperCase();
+    const hasFresh =
+      secTabState.data &&
+      String(secTabState.data?.symbol || "").toUpperCase() === selectedSymbol &&
+      Date.now() - Number(secTabState.fetchedAt || 0) < SEC_BRIEF_TAB_TTL_MS;
+    if (hasFresh) {
+      renderSecView();
+    } else {
+      secTabState = { ...secTabState, symbol: selectedSymbol, loading: true, error: "" };
+      renderSecLoading(selectedSymbol);
+      loadSecBrief(selectedSymbol)
+        .then(() => {
+          if (currentTab !== targetTab) return;
+          renderSecView();
+        })
+        .catch((error) => {
+          if (currentTab !== targetTab) return;
+          secTabState = { ...secTabState, loading: false, error: error.message || "Failed to load SEC brief." };
+          renderSecView();
+        });
+    }
+    return;
+  }
   if (tabName === SHOPPING_TAB) {
     if (schwabSession.connected) {
       loadSchwabContextData()
@@ -4945,6 +5183,25 @@ workspaceRefreshBtn?.addEventListener("click", () => {
   }
   if (currentTab === TIME_TAB) {
     activateTab(TIME_TAB);
+    return;
+  }
+  if (currentTab === SEC_TAB) {
+    const targetTab = SEC_TAB;
+    const selectedSymbol = String(secTabState.symbol || "AAPL")
+      .trim()
+      .toUpperCase();
+    secTabState = { ...secTabState, symbol: selectedSymbol, loading: true, error: "" };
+    renderSecLoading(selectedSymbol);
+    loadSecBrief(selectedSymbol, { force: true })
+      .then(() => {
+        if (currentTab !== targetTab) return;
+        renderSecView();
+      })
+      .catch((error) => {
+        if (currentTab !== targetTab) return;
+        secTabState = { ...secTabState, loading: false, error: error.message || "Failed to refresh SEC brief." };
+        renderSecView();
+      });
     return;
   }
   if (currentTab === SHOPPING_TAB) {
@@ -5137,6 +5394,7 @@ async function initApp() {
   openTabs.add(INVESTMENTS_TAB);
   openTabs.add(TICKER_INTEL_TAB);
   openTabs.add(TIME_TAB);
+  openTabs.add(SEC_TAB);
   if (schwabSession.connected) {
     activateTab(HOME_TAB);
   } else {
