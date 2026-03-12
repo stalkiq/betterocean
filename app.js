@@ -131,7 +131,7 @@ let secTabState = {
   category: "all",
   hiddenRowIds: {},
   offset: 0,
-  limit: 120,
+  limit: 30,
   hasMore: true,
   loadingMore: false,
   sheetScrollTop: 0,
@@ -429,7 +429,7 @@ async function loadSecBrief(options = {}) {
   const symbolsKey = allMode ? "ALL" : symbols.join(",");
   const safeDays = Math.max(7, Math.min(365, Number(days) || 180));
   const safeCategory = String(category || "all").trim().toLowerCase();
-  const safeLimit = Math.max(20, Math.min(200, Number(limit) || 120));
+  const safeLimit = Math.max(10, Math.min(30, Number(limit) || 30));
   const nextOffset = append ? Math.max(0, Number(secTabState.offset || 0)) : 0;
   const cacheKey = `${symbolsKey}|${safeDays}|${safeCategory}|${safeLimit}|0`;
   const cached = secTabState.cache[cacheKey];

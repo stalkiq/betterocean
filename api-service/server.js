@@ -2978,7 +2978,7 @@ app.get(["/market/sec-grid", "/api/market/sec-grid"], async (req, res) => {
     .map((s) => normalizeTickerSymbol(s))
     .filter(Boolean)
     .slice(0, 200);
-  const limit = Math.max(20, Math.min(400, Number(req.query.limit || 120)));
+  const limit = Math.max(10, Math.min(30, Number(req.query.limit || 30)));
   const days = Math.max(7, Math.min(365, Number(req.query.days || 180)));
   const offset = Math.max(0, Number(req.query.offset || 0));
   const category = String(req.query.category || "all")
