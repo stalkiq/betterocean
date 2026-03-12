@@ -883,7 +883,7 @@ async function buildSecGridRows({
   offset = 0,
   category = "all",
 }) {
-  const safeSymbols = [...new Set((Array.isArray(symbols) ? symbols : []).map((s) => normalizeTickerSymbol(s)).filter(Boolean))].slice(0, 25);
+  const safeSymbols = [...new Set((Array.isArray(symbols) ? symbols : []).map((s) => normalizeTickerSymbol(s)).filter(Boolean))].slice(0, 200);
   const metaMap = await loadSecCompanyMetaMap().catch(() => ({}));
   const nameMap = await resolveCompanyNamesForSymbols(safeSymbols).catch(() => ({}));
   const maxAgeDays = Math.max(1, Number(days) || 180);
@@ -2971,23 +2971,49 @@ app.get(["/market/sec-brief", "/api/market/sec-brief"], async (req, res) => {
 });
 
 app.get(["/market/sec-grid", "/api/market/sec-grid"], async (req, res) => {
-  const symbols = String(req.query.symbols || "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,EXE,ADM")
+  const symbolsRaw = String(req.query.symbols || "").trim();
+  const allMode = !symbolsRaw || /^(all|\*)$/i.test(symbolsRaw);
+  let symbols = symbolsRaw
     .split(",")
     .map((s) => normalizeTickerSymbol(s))
     .filter(Boolean)
-    .slice(0, 25);
-  if (!symbols.length) {
-    sendJson(res, 400, { error: "symbols query param is required." });
-    return;
-  }
+    .slice(0, 200);
   const limit = Math.max(20, Math.min(400, Number(req.query.limit || 120)));
   const days = Math.max(7, Math.min(365, Number(req.query.days || 180)));
   const offset = Math.max(0, Number(req.query.offset || 0));
   const category = String(req.query.category || "all")
     .trim()
     .toLowerCase();
+  let totalUniverse = symbols.length;
+  if (allMode) {
+    const metaMap = await loadSecCompanyMetaMap().catch(() => ({}));
+    const allSymbols = Object.keys(metaMap)
+      .map((s) => normalizeTickerSymbol(s))
+      .filter(Boolean)
+      .sort();
+    totalUniverse = allSymbols.length;
+    symbols = allSymbols.slice(offset, offset + limit);
+  }
+  if (!symbols.length) {
+    sendJson(res, 200, {
+      symbols: [],
+      limit,
+      days,
+      offset,
+      nextOffset: offset,
+      hasMore: false,
+      totalRows: totalUniverse,
+      category,
+      rowCount: 0,
+      rows: [],
+      failures: [],
+      source: "sec+heuristics",
+      asOf: new Date().toISOString(),
+    });
+    return;
+  }
   const force = /^(1|true|yes)$/i.test(String(req.query.force || "").trim());
-  const redisKey = buildRedisCacheKey("sec-grid-v2", `${symbols.join(",")}|${limit}|${days}|${offset}|${category}`);
+  const redisKey = buildRedisCacheKey("sec-grid-v3", `${allMode ? "all" : symbols.join(",")}|${limit}|${days}|${offset}|${category}`);
   if (!force) {
     const redisCached = await getRedisCacheJson(redisKey);
     if (redisCached) {
@@ -2996,15 +3022,15 @@ app.get(["/market/sec-grid", "/api/market/sec-grid"], async (req, res) => {
     }
   }
   try {
-    const payload = await buildSecGridRows({ symbols, limit, days, offset, category });
+    const payload = await buildSecGridRows({ symbols, limit, days, offset: allMode ? 0 : offset, category });
     const response = {
       symbols,
       limit,
       days,
-      offset: Number(payload.offset || 0),
-      nextOffset: Number(payload.nextOffset || 0),
-      hasMore: Boolean(payload.hasMore),
-      totalRows: Number(payload.total || 0),
+      offset,
+      nextOffset: allMode ? offset + symbols.length : Number(payload.nextOffset || 0),
+      hasMore: allMode ? offset + symbols.length < totalUniverse : Boolean(payload.hasMore),
+      totalRows: allMode ? totalUniverse : Number(payload.total || 0),
       category: payload.category || category,
       rowCount: Number(payload.rows?.length || 0),
       rows: payload.rows || [],

@@ -126,7 +126,7 @@ let investmentsMarket = { assets: [], updatedAt: null, beginnerBrief: null };
 let openingPlaybook = { buckets: [], asOf: null, agentBriefs: null };
 let openingQuotesBySymbol = {};
 let secTabState = {
-  symbolsInput: "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,EXE,ADM",
+  symbolsInput: "ALL",
   days: 180,
   category: "all",
   hiddenRowIds: {},
@@ -403,8 +403,10 @@ async function loadOpeningPlaybook() {
 }
 
 function normalizeSecSymbolsInput(raw) {
+  const source = String(raw || "").trim().toUpperCase();
+  if (!source || source === "ALL" || source === "*") return [];
   return [...new Set(
-    String(raw || "")
+    source
       .split(",")
       .map((s) => String(s || "").trim().toUpperCase())
       .filter(Boolean)
@@ -423,18 +425,19 @@ async function loadSecBrief(options = {}) {
     limit = secTabState.limit || 120,
   } = options;
   const symbols = normalizeSecSymbolsInput(symbolsInput);
-  if (!symbols.length) throw new Error("At least one ticker symbol is required.");
+  const allMode = symbols.length === 0;
+  const symbolsKey = allMode ? "ALL" : symbols.join(",");
   const safeDays = Math.max(7, Math.min(365, Number(days) || 180));
   const safeCategory = String(category || "all").trim().toLowerCase();
   const safeLimit = Math.max(20, Math.min(200, Number(limit) || 120));
   const nextOffset = append ? Math.max(0, Number(secTabState.offset || 0)) : 0;
-  const cacheKey = `${symbols.join(",")}|${safeDays}|${safeCategory}|${safeLimit}|0`;
+  const cacheKey = `${symbolsKey}|${safeDays}|${safeCategory}|${safeLimit}|0`;
   const cached = secTabState.cache[cacheKey];
   const cachedAt = Number(secTabState.cacheAt[cacheKey] || 0);
   if (!append && !force && cached && Date.now() - cachedAt < SEC_BRIEF_TAB_TTL_MS) {
     secTabState = {
       ...secTabState,
-      symbolsInput: symbols.join(","),
+      symbolsInput: symbolsKey,
       days: safeDays,
       category: safeCategory,
       offset: Number(cached?.nextOffset || (Array.isArray(cached?.rows) ? cached.rows.length : 0)),
@@ -448,7 +451,7 @@ async function loadSecBrief(options = {}) {
     return cached;
   }
   const payload = await schwabApi(
-    `/api/market/sec-grid?symbols=${encodeURIComponent(symbols.join(","))}&days=${safeDays}&limit=${safeLimit}&offset=${nextOffset}&category=${encodeURIComponent(
+    `/api/market/sec-grid?symbols=${encodeURIComponent(symbolsKey.toLowerCase() === "all" ? "all" : symbolsKey)}&days=${safeDays}&limit=${safeLimit}&offset=${nextOffset}&category=${encodeURIComponent(
       safeCategory
     )}${force ? "&force=1" : ""}`,
     { method: "GET" }
@@ -461,7 +464,7 @@ async function loadSecBrief(options = {}) {
     : payloadRows;
   secTabState = {
     ...secTabState,
-    symbolsInput: symbols.join(","),
+    symbolsInput: symbolsKey,
     days: safeDays,
     category: safeCategory,
     offset: Number(payload?.nextOffset || (append ? nextOffset + payloadRows.length : payloadRows.length)),
@@ -5051,7 +5054,7 @@ function activateTab(tabName) {
   }
   if (tabName === SEC_TAB) {
     const targetTab = SEC_TAB;
-    const selectedSymbols = String(secTabState.symbolsInput || "AAPL")
+    const selectedSymbols = String(secTabState.symbolsInput || "ALL")
       .trim()
       .toUpperCase();
     const hasFresh =
@@ -5206,7 +5209,7 @@ workspaceRefreshBtn?.addEventListener("click", () => {
   }
   if (currentTab === SEC_TAB) {
     const targetTab = SEC_TAB;
-    const selectedSymbols = String(secTabState.symbolsInput || "AAPL")
+    const selectedSymbols = String(secTabState.symbolsInput || "ALL")
       .trim()
       .toUpperCase();
     secTabState = { ...secTabState, symbolsInput: selectedSymbols, loading: true, error: "" };
