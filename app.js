@@ -126,15 +126,20 @@ let investmentsMarket = { assets: [], updatedAt: null, beginnerBrief: null };
 let openingPlaybook = { buckets: [], asOf: null, agentBriefs: null };
 let openingQuotesBySymbol = {};
 let secTabState = {
-  symbol: "AAPL",
+  symbolsInput: "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,EXE,ADM",
+  days: 180,
+  impactFilter: "all",
+  formFilter: "all",
+  hiddenRowIds: {},
   loading: false,
   error: "",
-  data: null,
+  rows: [],
+  meta: null,
   fetchedAt: 0,
   cache: {},
   cacheAt: {},
 };
-const SEC_QUICK_SYMBOLS = ["AAPL", "MSFT", "NVDA", "EXE", "ADM", "TSLA"];
+const SEC_QUICK_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "EXE", "ADM"];
 const DEFAULT_TICKER_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH"];
 const SHOPPING_10_TO_50_SYMBOLS = ["F", "PFE", "BAC", "INTC", "T", "VZ", "KHC", "CCL", "SNAP", "PARA"];
 const SYMBOL_COMPANY_NAMES = {
@@ -393,41 +398,57 @@ async function loadOpeningPlaybook() {
   return openingPlaybook;
 }
 
-async function loadSecBrief(symbol = "AAPL", options = {}) {
-  const { force = false } = options;
-  const safeSymbol = String(symbol || "")
-    .trim()
-    .toUpperCase();
-  if (!safeSymbol) throw new Error("Ticker symbol is required.");
+function normalizeSecSymbolsInput(raw) {
+  return [...new Set(
+    String(raw || "")
+      .split(",")
+      .map((s) => String(s || "").trim().toUpperCase())
+      .filter(Boolean)
+      .map((s) => s.replace(/[^A-Z.\-]/g, "").slice(0, 12))
+      .filter(Boolean)
+  )].slice(0, 25);
+}
 
-  const cached = secTabState.cache[safeSymbol];
-  const cachedAt = Number(secTabState.cacheAt[safeSymbol] || 0);
+async function loadSecBrief(options = {}) {
+  const {
+    force = false,
+    symbolsInput = secTabState.symbolsInput,
+    days = secTabState.days,
+  } = options;
+  const symbols = normalizeSecSymbolsInput(symbolsInput);
+  if (!symbols.length) throw new Error("At least one ticker symbol is required.");
+  const safeDays = Math.max(7, Math.min(365, Number(days) || 180));
+  const cacheKey = `${symbols.join(",")}|${safeDays}`;
+  const cached = secTabState.cache[cacheKey];
+  const cachedAt = Number(secTabState.cacheAt[cacheKey] || 0);
   if (!force && cached && Date.now() - cachedAt < SEC_BRIEF_TAB_TTL_MS) {
     secTabState = {
       ...secTabState,
-      symbol: safeSymbol,
+      symbolsInput: symbols.join(","),
+      days: safeDays,
       loading: false,
       error: "",
-      data: cached,
+      rows: Array.isArray(cached?.rows) ? cached.rows : [],
+      meta: cached,
       fetchedAt: cachedAt,
     };
     return cached;
   }
-
   const payload = await schwabApi(
-    `/api/market/sec-brief?symbol=${encodeURIComponent(safeSymbol)}${force ? "&force=1" : ""}`,
+    `/api/market/sec-grid?symbols=${encodeURIComponent(symbols.join(","))}&days=${safeDays}&limit=180${force ? "&force=1" : ""}`,
     { method: "GET" }
   );
-
   secTabState = {
     ...secTabState,
-    symbol: safeSymbol,
+    symbolsInput: symbols.join(","),
+    days: safeDays,
     loading: false,
     error: "",
-    data: payload,
+    rows: Array.isArray(payload?.rows) ? payload.rows : [],
+    meta: payload,
     fetchedAt: Date.now(),
-    cache: { ...secTabState.cache, [safeSymbol]: payload },
-    cacheAt: { ...secTabState.cacheAt, [safeSymbol]: Date.now() },
+    cache: { ...secTabState.cache, [cacheKey]: payload },
+    cacheAt: { ...secTabState.cacheAt, [cacheKey]: Date.now() },
   };
   return payload;
 }
@@ -4029,154 +4050,205 @@ function renderSchwabConnectView() {
 }
 
 function renderSecLoading(symbol = "AAPL") {
-  workspaceTableWrap.innerHTML = `<div class="do-loading">Loading SEC + Gradient brief for ${escapeHtml(symbol)}...</div>`;
+  workspaceTableWrap.innerHTML = `<div class="do-loading">Loading SEC sheet for ${escapeHtml(symbol)}...</div>`;
 }
 
 function renderSecView() {
-  const symbol = String(secTabState.symbol || "AAPL").toUpperCase();
-  const data = secTabState.data || null;
-  const filings = Array.isArray(data?.filings) ? data.filings : [];
-  const summary = data?.summary && typeof data.summary === "object" ? data.summary : null;
-  const filingRows = filings.length
-    ? filings
-        .slice(0, 8)
-        .map(
-          (item) => `
-      <tr>
-        <td>${escapeHtml(item.form || "-")}</td>
-        <td>${escapeHtml(item.filingDate || "-")}</td>
-        <td>${escapeHtml(item.description || "-")}</td>
-        <td>${item.secUrl ? `<a href="${escapeHtml(item.secUrl)}" target="_blank" rel="noopener noreferrer">Open filing</a>` : "-"}</td>
-      </tr>
-    `
-        )
+  const allRows = Array.isArray(secTabState.rows) ? secTabState.rows : [];
+  const impactFilter = String(secTabState.impactFilter || "all").toLowerCase();
+  const formFilter = String(secTabState.formFilter || "all").toUpperCase();
+  const hiddenRowIds = secTabState.hiddenRowIds && typeof secTabState.hiddenRowIds === "object" ? secTabState.hiddenRowIds : {};
+  const filteredRows = allRows.filter((row) => {
+    if (hiddenRowIds[row.rowId]) return false;
+    if (impactFilter !== "all" && String(row.importance || "").toLowerCase() !== impactFilter) return false;
+    if (formFilter !== "ALL" && String(row.form || "").toUpperCase() !== formFilter) return false;
+    return true;
+  });
+  const rowHtml = filteredRows.length
+    ? filteredRows
+        .map((row, index) => {
+          const impactClass = String(row.importance || "").toLowerCase();
+          return `
+          <tr>
+            <td class="sec-row-index">${index + 1}</td>
+            <td class="sec-col-symbol">${escapeHtml(row.symbol || "-")}</td>
+            <td>${escapeHtml(row.companyName || "-")}</td>
+            <td>${escapeHtml(row.form || "-")}</td>
+            <td>${escapeHtml(row.filingDate || "-")}</td>
+            <td>${Number.isFinite(Number(row.daysAgo)) ? Number(row.daysAgo) : "-"}</td>
+            <td><span class="sec-impact ${impactClass}">${escapeHtml(row.importance || "Low")}</span></td>
+            <td>${escapeHtml(row.topic || "-")}</td>
+            <td>${escapeHtml(row.aiSummary || row.description || "-")}</td>
+            <td>${row.secUrl ? `<a href="${escapeHtml(row.secUrl)}" target="_blank" rel="noopener noreferrer">Open</a>` : "-"}</td>
+            <td><button type="button" class="refresh-btn sec-hide-row-btn" data-hide-sec-row="${escapeHtml(row.rowId || "")}">Hide</button></td>
+          </tr>
+        `;
+        })
         .join("")
-    : '<tr><td colspan="4">No recent SEC filings found for this symbol.</td></tr>';
-  const bullets = Array.isArray(summary?.bullets) ? summary.bullets.slice(0, 4) : [];
-  const watchItems = Array.isArray(summary?.watchItems) ? summary.watchItems.slice(0, 4) : [];
+    : '<tr><td colspan="11">No rows match your current filters.</td></tr>';
   const quickChips = SEC_QUICK_SYMBOLS.map(
-    (chip) => `<button type="button" class="watchboard-chip ${chip === symbol ? "active" : ""}" data-sec-symbol="${chip}">${chip}</button>`
+    (chip) => `<button type="button" class="watchboard-chip" data-sec-chip="${chip}">${chip}</button>`
   ).join("");
+  const meta = secTabState.meta || {};
+  const source = String(meta?.source || "sec+heuristics");
+  const failures = Array.isArray(meta?.failures) ? meta.failures : [];
+  const updated = secTabState.fetchedAt ? new Date(secTabState.fetchedAt).toLocaleString() : "n/a";
 
   workspaceTableWrap.innerHTML = `
     <div class="agent-view">
       <section class="agent-hero">
-        <h3>SEC Filing Intelligence</h3>
-        <p>Use SEC filings plus Gradient AI summaries to understand what changed and why it matters.</p>
+        <h3>SEC Filing Sheet</h3>
+        <p>Spreadsheet-style view of the most recent and important SEC filings.</p>
       </section>
-      <section class="schwab-card">
-        <form id="secBriefForm" class="ticker-filters-inline">
-          <input id="secBriefSymbolInput" value="${escapeHtml(symbol)}" maxlength="12" placeholder="Ticker symbol (ex: AAPL)" />
-          <button type="submit" class="refresh-btn">Load SEC Brief</button>
-          <button type="button" id="secBriefForceBtn" class="refresh-btn">Refresh from SEC</button>
+      <section class="schwab-card sec-sheet-controls">
+        <form id="secGridForm" class="ticker-filters-inline">
+          <input id="secGridSymbolsInput" value="${escapeHtml(secTabState.symbolsInput || "")}" placeholder="AAPL,MSFT,NVDA,EXE,ADM" />
+          <select id="secGridDaysSelect">
+            <option value="30" ${Number(secTabState.days) === 30 ? "selected" : ""}>Last 30D</option>
+            <option value="90" ${Number(secTabState.days) === 90 ? "selected" : ""}>Last 90D</option>
+            <option value="180" ${Number(secTabState.days) === 180 ? "selected" : ""}>Last 180D</option>
+            <option value="365" ${Number(secTabState.days) === 365 ? "selected" : ""}>Last 365D</option>
+          </select>
+          <button type="submit" class="refresh-btn">Load Sheet</button>
+          <button type="button" id="secGridForceBtn" class="refresh-btn">Refresh SEC</button>
         </form>
         <div class="watchboard-chip-row">${quickChips}</div>
+        <div class="ticker-meta-inline">
+          <span class="ticker-catalyst-chip">Rows: ${allRows.length}</span>
+          <span class="ticker-catalyst-chip">Visible: ${filteredRows.length}</span>
+          <span class="ticker-catalyst-chip">Source: ${escapeHtml(source)}</span>
+          <span class="ticker-catalyst-chip">Updated: ${escapeHtml(updated)}</span>
+        </div>
       </section>
-      ${
-        secTabState.error
-          ? `<div class="do-error"><strong>Error</strong><p>${escapeHtml(secTabState.error)}</p></div>`
-          : `
-      <section class="schwab-metrics">
-        <article class="schwab-metric-card">
-          <h4>Company</h4>
-          <div class="schwab-metric-value small">${escapeHtml(data?.companyName || symbol)}</div>
-        </article>
-        <article class="schwab-metric-card">
-          <h4>CIK</h4>
-          <div class="schwab-metric-value small">${escapeHtml(data?.cik || "n/a")}</div>
-        </article>
-        <article class="schwab-metric-card">
-          <h4>Latest filing</h4>
-          <div class="schwab-metric-value small">${escapeHtml(filings[0]?.form || "n/a")} · ${escapeHtml(
-            filings[0]?.filingDate || "n/a"
-          )}</div>
-        </article>
+      <section class="schwab-card sec-sheet-controls">
+        <form id="secGridFiltersForm" class="ticker-filters-inline">
+          <select id="secImpactFilter">
+            <option value="all" ${impactFilter === "all" ? "selected" : ""}>Importance: All</option>
+            <option value="high" ${impactFilter === "high" ? "selected" : ""}>Importance: High</option>
+            <option value="medium" ${impactFilter === "medium" ? "selected" : ""}>Importance: Medium</option>
+            <option value="low" ${impactFilter === "low" ? "selected" : ""}>Importance: Low</option>
+          </select>
+          <select id="secFormFilter">
+            <option value="ALL" ${formFilter === "ALL" ? "selected" : ""}>Form: All</option>
+            <option value="10-K" ${formFilter === "10-K" ? "selected" : ""}>10-K</option>
+            <option value="10-Q" ${formFilter === "10-Q" ? "selected" : ""}>10-Q</option>
+            <option value="8-K" ${formFilter === "8-K" ? "selected" : ""}>8-K</option>
+          </select>
+          <button type="button" id="secClearHiddenBtn" class="refresh-btn">Unhide All</button>
+        </form>
+        ${
+          secTabState.error
+            ? `<div class="do-error"><strong>Error</strong><p>${escapeHtml(secTabState.error)}</p></div>`
+            : failures.length
+              ? `<p class="settings-desc">SEC source unavailable for: ${escapeHtml(
+                  failures
+                    .slice(0, 6)
+                    .map((item) => item.symbol)
+                    .join(", ")
+                )}${failures.length > 6 ? "..." : ""}</p>`
+              : ""
+        }
       </section>
-      <section class="schwab-grid">
-        <article class="schwab-card">
-          <h4>${escapeHtml(summary?.headline || "Gradient SEC summary")}</h4>
-          <ul class="ticker-bullets">
-            ${(bullets.length ? bullets : ["No summary bullets yet."]).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
-          </ul>
-        </article>
-        <article class="schwab-card">
-          <h4>What to watch</h4>
-          <ul class="ticker-bullets">
-            ${(watchItems.length ? watchItems : ["Monitor next 10-Q, 10-K, and 8-K updates."])
-              .map((line) => `<li>${escapeHtml(line)}</li>`)
-              .join("")}
-          </ul>
-        </article>
-      </section>
-      <section class="table-wrap">
-        <table>
+      <section class="table-wrap sec-sheet-wrap">
+        <table class="sec-sheet-table">
           <thead>
             <tr>
+              <th>#</th>
+              <th>Symbol</th>
+              <th>Company</th>
               <th>Form</th>
-              <th>Filing date</th>
-              <th>Description</th>
+              <th>Filed Date</th>
+              <th>Days Ago</th>
+              <th>Importance</th>
+              <th>Topic</th>
+              <th>AI Summary</th>
               <th>Source</th>
+              <th>Action</th>
             </tr>
           </thead>
-          <tbody>${filingRows}</tbody>
+          <tbody>${rowHtml}</tbody>
         </table>
       </section>
-      `
-      }
     </div>
   `;
 
-  const form = document.getElementById("secBriefForm");
-  const symbolInput = document.getElementById("secBriefSymbolInput");
-  const forceBtn = document.getElementById("secBriefForceBtn");
+  const form = document.getElementById("secGridForm");
+  const symbolsInput = document.getElementById("secGridSymbolsInput");
+  const daysSelect = document.getElementById("secGridDaysSelect");
+  const forceBtn = document.getElementById("secGridForceBtn");
+  const impactSelect = document.getElementById("secImpactFilter");
+  const formSelect = document.getElementById("secFormFilter");
+  const unhideBtn = document.getElementById("secClearHiddenBtn");
+
   form?.addEventListener("submit", (event) => {
     event.preventDefault();
-    const nextSymbol = String(symbolInput?.value || "")
-      .trim()
-      .toUpperCase();
-    if (!nextSymbol) return;
-    secTabState = { ...secTabState, symbol: nextSymbol, loading: true, error: "" };
-    renderSecLoading(nextSymbol);
-    loadSecBrief(nextSymbol)
+    const nextSymbols = String(symbolsInput?.value || "").trim().toUpperCase();
+    const nextDays = Number(daysSelect?.value || secTabState.days || 180);
+    if (!nextSymbols) return;
+    secTabState = { ...secTabState, symbolsInput: nextSymbols, days: nextDays, loading: true, error: "" };
+    renderSecLoading(nextSymbols);
+    loadSecBrief({ symbolsInput: nextSymbols, days: nextDays })
       .then(() => {
         if (currentTab === SEC_TAB) renderSecView();
       })
       .catch((error) => {
-        secTabState = { ...secTabState, loading: false, error: error.message || "Failed to load SEC brief." };
+        secTabState = { ...secTabState, loading: false, error: error.message || "Failed to load SEC sheet." };
         if (currentTab === SEC_TAB) renderSecView();
       });
   });
   forceBtn?.addEventListener("click", () => {
-    const nextSymbol = String(symbolInput?.value || symbol)
-      .trim()
-      .toUpperCase();
-    if (!nextSymbol) return;
-    secTabState = { ...secTabState, symbol: nextSymbol, loading: true, error: "" };
-    renderSecLoading(nextSymbol);
-    loadSecBrief(nextSymbol, { force: true })
+    const nextSymbols = String(symbolsInput?.value || "").trim().toUpperCase();
+    const nextDays = Number(daysSelect?.value || secTabState.days || 180);
+    if (!nextSymbols) return;
+    secTabState = { ...secTabState, symbolsInput: nextSymbols, days: nextDays, loading: true, error: "" };
+    renderSecLoading(nextSymbols);
+    loadSecBrief({ symbolsInput: nextSymbols, days: nextDays, force: true })
       .then(() => {
         if (currentTab === SEC_TAB) renderSecView();
       })
       .catch((error) => {
-        secTabState = { ...secTabState, loading: false, error: error.message || "Failed to refresh SEC brief." };
+        secTabState = { ...secTabState, loading: false, error: error.message || "Failed to refresh SEC sheet." };
         if (currentTab === SEC_TAB) renderSecView();
       });
   });
-
-  workspaceTableWrap.querySelectorAll("[data-sec-symbol]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const nextSymbol = String(button.getAttribute("data-sec-symbol") || "")
-        .trim()
-        .toUpperCase();
-      if (!nextSymbol) return;
-      secTabState = { ...secTabState, symbol: nextSymbol, loading: true, error: "" };
-      renderSecLoading(nextSymbol);
-      loadSecBrief(nextSymbol)
+  impactSelect?.addEventListener("change", () => {
+    secTabState = { ...secTabState, impactFilter: String(impactSelect.value || "all").toLowerCase() };
+    renderSecView();
+  });
+  formSelect?.addEventListener("change", () => {
+    secTabState = { ...secTabState, formFilter: String(formSelect.value || "ALL").toUpperCase() };
+    renderSecView();
+  });
+  unhideBtn?.addEventListener("click", () => {
+    secTabState = { ...secTabState, hiddenRowIds: {} };
+    renderSecView();
+  });
+  workspaceTableWrap.querySelectorAll("[data-hide-sec-row]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const rowId = String(btn.getAttribute("data-hide-sec-row") || "");
+      if (!rowId) return;
+      secTabState = {
+        ...secTabState,
+        hiddenRowIds: { ...(secTabState.hiddenRowIds || {}), [rowId]: true },
+      };
+      renderSecView();
+    });
+  });
+  workspaceTableWrap.querySelectorAll("[data-sec-chip]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const chip = String(btn.getAttribute("data-sec-chip") || "").trim().toUpperCase();
+      if (!chip) return;
+      const currentSymbols = normalizeSecSymbolsInput(secTabState.symbolsInput || "");
+      if (!currentSymbols.includes(chip)) currentSymbols.unshift(chip);
+      const nextSymbols = [...new Set(currentSymbols)].slice(0, 25).join(",");
+      secTabState = { ...secTabState, symbolsInput: nextSymbols, loading: true, error: "" };
+      renderSecLoading(nextSymbols);
+      loadSecBrief({ symbolsInput: nextSymbols, days: secTabState.days })
         .then(() => {
           if (currentTab === SEC_TAB) renderSecView();
         })
         .catch((error) => {
-          secTabState = { ...secTabState, loading: false, error: error.message || "Failed to load SEC brief." };
+          secTabState = { ...secTabState, loading: false, error: error.message || "Failed to load SEC sheet." };
           if (currentTab === SEC_TAB) renderSecView();
         });
     });
@@ -5032,19 +5104,19 @@ function activateTab(tabName) {
   }
   if (tabName === SEC_TAB) {
     const targetTab = SEC_TAB;
-    const selectedSymbol = String(secTabState.symbol || "AAPL")
+    const selectedSymbols = String(secTabState.symbolsInput || "AAPL")
       .trim()
       .toUpperCase();
     const hasFresh =
-      secTabState.data &&
-      String(secTabState.data?.symbol || "").toUpperCase() === selectedSymbol &&
+      Array.isArray(secTabState.rows) &&
+      secTabState.rows.length > 0 &&
       Date.now() - Number(secTabState.fetchedAt || 0) < SEC_BRIEF_TAB_TTL_MS;
     if (hasFresh) {
       renderSecView();
     } else {
-      secTabState = { ...secTabState, symbol: selectedSymbol, loading: true, error: "" };
-      renderSecLoading(selectedSymbol);
-      loadSecBrief(selectedSymbol)
+      secTabState = { ...secTabState, symbolsInput: selectedSymbols, loading: true, error: "" };
+      renderSecLoading(selectedSymbols);
+      loadSecBrief({ symbolsInput: selectedSymbols, days: secTabState.days })
         .then(() => {
           if (currentTab !== targetTab) return;
           renderSecView();
@@ -5187,12 +5259,12 @@ workspaceRefreshBtn?.addEventListener("click", () => {
   }
   if (currentTab === SEC_TAB) {
     const targetTab = SEC_TAB;
-    const selectedSymbol = String(secTabState.symbol || "AAPL")
+    const selectedSymbols = String(secTabState.symbolsInput || "AAPL")
       .trim()
       .toUpperCase();
-    secTabState = { ...secTabState, symbol: selectedSymbol, loading: true, error: "" };
-    renderSecLoading(selectedSymbol);
-    loadSecBrief(selectedSymbol, { force: true })
+    secTabState = { ...secTabState, symbolsInput: selectedSymbols, loading: true, error: "" };
+    renderSecLoading(selectedSymbols);
+    loadSecBrief({ symbolsInput: selectedSymbols, days: secTabState.days, force: true })
       .then(() => {
         if (currentTab !== targetTab) return;
         renderSecView();

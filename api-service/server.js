@@ -732,6 +732,123 @@ function buildSecBriefFallback(symbol, companyName, filings = []) {
   };
 }
 
+function getSecImportanceForFiling(form, description = "") {
+  const safeForm = String(form || "").toUpperCase().trim();
+  const text = String(description || "").toLowerCase();
+  if (safeForm === "8-K") {
+    if (/(bankrupt|going concern|default|delist|material weakness|investigation|restatement|ceo|cfo|resign|merger|acquisition|litigation)/i.test(text)) {
+      return { label: "High", score: 3 };
+    }
+    return { label: "Medium", score: 2 };
+  }
+  if (safeForm === "10-K") return { label: "High", score: 3 };
+  if (safeForm === "10-Q") return { label: "Medium", score: 2 };
+  return { label: "Low", score: 1 };
+}
+
+function getSecTopicForFiling(form, description = "") {
+  const safeForm = String(form || "").toUpperCase().trim();
+  const text = String(description || "").toLowerCase();
+  if (safeForm === "8-K") {
+    if (/(ceo|cfo|director|officer|appoint|resign)/i.test(text)) return "Leadership";
+    if (/(litigation|lawsuit|investigation|legal|settlement)/i.test(text)) return "Legal";
+    if (/(debt|credit|loan|liquidity|financing)/i.test(text)) return "Debt";
+    if (/(risk|material weakness|internal control)/i.test(text)) return "Risk";
+    return "Material Update";
+  }
+  if (safeForm === "10-K" || safeForm === "10-Q") return "Financial Report";
+  return "General Filing";
+}
+
+function formatFilingDaysAgo(filingDate) {
+  const ts = Date.parse(String(filingDate || ""));
+  if (!Number.isFinite(ts)) return null;
+  return Math.max(0, Math.floor((Date.now() - ts) / (24 * 60 * 60 * 1000)));
+}
+
+function buildSecAiSummary(companyName, filing) {
+  const form = String(filing?.form || "").toUpperCase();
+  const description = String(filing?.description || "").trim();
+  if (form === "10-K") return `${companyName} annual report. Focus on full-year trends and risks.`;
+  if (form === "10-Q") return `${companyName} quarterly update. Compare revenue, margins, and guidance.`;
+  if (form === "8-K") {
+    return description
+      ? `${companyName} material event filed. ${trimToWords(description, 14)}`
+      : `${companyName} material event update filed with SEC.`;
+  }
+  return `${companyName} filed ${form || "an SEC form"}. Review source details for context.`;
+}
+
+async function buildSecGridRows({
+  symbols = [],
+  limit = 120,
+  days = 180,
+}) {
+  const safeSymbols = [...new Set((Array.isArray(symbols) ? symbols : []).map((s) => normalizeTickerSymbol(s)).filter(Boolean))].slice(0, 25);
+  const metaMap = await loadSecCompanyMetaMap().catch(() => ({}));
+  const nameMap = await resolveCompanyNamesForSymbols(safeSymbols).catch(() => ({}));
+  const maxAgeDays = Math.max(1, Number(days) || 180);
+  const rows = [];
+  const failures = [];
+
+  await Promise.all(
+    safeSymbols.map(async (symbol) => {
+      const meta = metaMap?.[symbol] || null;
+      const companyName = String(meta?.name || nameMap?.[symbol] || getCompanyLookupName(symbol) || symbol).trim();
+      const cik = formatSecCik(meta?.cik || "");
+      if (!cik) {
+        failures.push({ symbol, reason: "missing-cik" });
+        return;
+      }
+      try {
+        const submissions = await fetchSecSubmissionsByCik(cik);
+        const filings = extractRecentSecFilings(submissions, cik, 24);
+        filings.forEach((filing) => {
+          const filedAt = Date.parse(String(filing?.filingDate || ""));
+          if (!Number.isFinite(filedAt)) return;
+          const daysAgo = formatFilingDaysAgo(filing.filingDate);
+          if (Number.isFinite(daysAgo) && daysAgo > maxAgeDays) return;
+          const importance = getSecImportanceForFiling(filing.form, filing.description || "");
+          const topic = getSecTopicForFiling(filing.form, filing.description || "");
+          rows.push({
+            rowId: `${symbol}:${filing.accessionNumber}`,
+            symbol,
+            companyName,
+            cik,
+            form: String(filing.form || "").toUpperCase(),
+            filingDate: filing.filingDate,
+            daysAgo,
+            importance: importance.label,
+            importanceScore: importance.score,
+            topic,
+            description: String(filing.description || "").trim(),
+            aiSummary: buildSecAiSummary(companyName, filing),
+            secUrl: String(filing.secUrl || "").trim(),
+          });
+        });
+      } catch (err) {
+        failures.push({ symbol, reason: err?.message || "sec-fetch-failed" });
+      }
+    })
+  );
+
+  const sorted = rows
+    .sort((a, b) => {
+      const scoreDelta = Number(b.importanceScore || 0) - Number(a.importanceScore || 0);
+      if (scoreDelta !== 0) return scoreDelta;
+      const dateDelta = Date.parse(String(b.filingDate || "")) - Date.parse(String(a.filingDate || ""));
+      if (Number.isFinite(dateDelta) && dateDelta !== 0) return dateDelta;
+      return String(a.symbol).localeCompare(String(b.symbol));
+    })
+    .slice(0, Math.max(20, Math.min(400, Number(limit) || 120)));
+
+  return {
+    rows: sorted,
+    failures,
+    asOf: new Date().toISOString(),
+  };
+}
+
 async function buildSecBrief(symbol) {
   const safeSymbol = normalizeTickerSymbol(symbol);
   if (!safeSymbol) {
@@ -2676,6 +2793,46 @@ app.get(["/market/sec-brief", "/api/market/sec-brief"], async (req, res) => {
     sendJson(res, 200, payload);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to build SEC brief." });
+  }
+});
+
+app.get(["/market/sec-grid", "/api/market/sec-grid"], async (req, res) => {
+  const symbols = String(req.query.symbols || "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,EXE,ADM")
+    .split(",")
+    .map((s) => normalizeTickerSymbol(s))
+    .filter(Boolean)
+    .slice(0, 25);
+  if (!symbols.length) {
+    sendJson(res, 400, { error: "symbols query param is required." });
+    return;
+  }
+  const limit = Math.max(20, Math.min(400, Number(req.query.limit || 120)));
+  const days = Math.max(7, Math.min(365, Number(req.query.days || 180)));
+  const force = /^(1|true|yes)$/i.test(String(req.query.force || "").trim());
+  const redisKey = buildRedisCacheKey("sec-grid-v1", `${symbols.join(",")}|${limit}|${days}`);
+  if (!force) {
+    const redisCached = await getRedisCacheJson(redisKey);
+    if (redisCached) {
+      sendJson(res, 200, redisCached);
+      return;
+    }
+  }
+  try {
+    const payload = await buildSecGridRows({ symbols, limit, days });
+    const response = {
+      symbols,
+      limit,
+      days,
+      rowCount: Number(payload.rows?.length || 0),
+      rows: payload.rows || [],
+      failures: payload.failures || [],
+      source: "sec+heuristics",
+      asOf: payload.asOf || new Date().toISOString(),
+    };
+    await setRedisCacheJson(redisKey, response, SEC_BRIEF_TTL_MS);
+    sendJson(res, 200, response);
+  } catch (err) {
+    sendJson(res, err.status || 502, { error: err.message || "Failed to build SEC grid." });
   }
 });
 
