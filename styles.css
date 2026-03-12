@@ -222,11 +222,13 @@ body {
 
 .top-tabs {
   display: flex;
+  align-items: flex-end;
   gap: 6px;
-  padding: 8px;
+  padding: 8px 8px 10px;
   border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, var(--blue-900), var(--blue-950));
   overflow-x: auto;
+  overflow-y: visible;
 }
 
 .top-tab {
@@ -240,8 +242,9 @@ body {
   align-items: center;
   gap: 8px;
   white-space: nowrap;
-  min-height: 32px;
+  min-height: 34px;
   max-width: 220px;
+  line-height: 1.2;
 }
 
 .top-tab.active {
@@ -254,6 +257,7 @@ body {
 .top-tab-label {
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.2;
 }
 
 .top-tab-close {
