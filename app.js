@@ -128,9 +128,13 @@ let openingQuotesBySymbol = {};
 let secTabState = {
   symbolsInput: "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,EXE,ADM",
   days: 180,
-  impactFilter: "all",
-  formFilter: "all",
+  category: "all",
   hiddenRowIds: {},
+  offset: 0,
+  limit: 120,
+  hasMore: true,
+  loadingMore: false,
+  sheetScrollTop: 0,
   loading: false,
   error: "",
   rows: [],
@@ -414,18 +418,27 @@ async function loadSecBrief(options = {}) {
     force = false,
     symbolsInput = secTabState.symbolsInput,
     days = secTabState.days,
+    category = secTabState.category || "all",
+    append = false,
+    limit = secTabState.limit || 120,
   } = options;
   const symbols = normalizeSecSymbolsInput(symbolsInput);
   if (!symbols.length) throw new Error("At least one ticker symbol is required.");
   const safeDays = Math.max(7, Math.min(365, Number(days) || 180));
-  const cacheKey = `${symbols.join(",")}|${safeDays}`;
+  const safeCategory = String(category || "all").trim().toLowerCase();
+  const safeLimit = Math.max(20, Math.min(200, Number(limit) || 120));
+  const nextOffset = append ? Math.max(0, Number(secTabState.offset || 0)) : 0;
+  const cacheKey = `${symbols.join(",")}|${safeDays}|${safeCategory}|${safeLimit}|0`;
   const cached = secTabState.cache[cacheKey];
   const cachedAt = Number(secTabState.cacheAt[cacheKey] || 0);
-  if (!force && cached && Date.now() - cachedAt < SEC_BRIEF_TAB_TTL_MS) {
+  if (!append && !force && cached && Date.now() - cachedAt < SEC_BRIEF_TAB_TTL_MS) {
     secTabState = {
       ...secTabState,
       symbolsInput: symbols.join(","),
       days: safeDays,
+      category: safeCategory,
+      offset: Number(cached?.nextOffset || (Array.isArray(cached?.rows) ? cached.rows.length : 0)),
+      hasMore: Boolean(cached?.hasMore),
       loading: false,
       error: "",
       rows: Array.isArray(cached?.rows) ? cached.rows : [],
@@ -435,20 +448,32 @@ async function loadSecBrief(options = {}) {
     return cached;
   }
   const payload = await schwabApi(
-    `/api/market/sec-grid?symbols=${encodeURIComponent(symbols.join(","))}&days=${safeDays}&limit=180${force ? "&force=1" : ""}`,
+    `/api/market/sec-grid?symbols=${encodeURIComponent(symbols.join(","))}&days=${safeDays}&limit=${safeLimit}&offset=${nextOffset}&category=${encodeURIComponent(
+      safeCategory
+    )}${force ? "&force=1" : ""}`,
     { method: "GET" }
   );
+  const payloadRows = Array.isArray(payload?.rows) ? payload.rows : [];
+  const mergedRows = append
+    ? [...(Array.isArray(secTabState.rows) ? secTabState.rows : []), ...payloadRows].filter(
+        (row, index, arr) => index === arr.findIndex((entry) => entry.rowId === row.rowId)
+      )
+    : payloadRows;
   secTabState = {
     ...secTabState,
     symbolsInput: symbols.join(","),
     days: safeDays,
+    category: safeCategory,
+    offset: Number(payload?.nextOffset || (append ? nextOffset + payloadRows.length : payloadRows.length)),
+    hasMore: Boolean(payload?.hasMore),
+    loadingMore: false,
     loading: false,
     error: "",
-    rows: Array.isArray(payload?.rows) ? payload.rows : [],
+    rows: mergedRows,
     meta: payload,
     fetchedAt: Date.now(),
-    cache: { ...secTabState.cache, [cacheKey]: payload },
-    cacheAt: { ...secTabState.cacheAt, [cacheKey]: Date.now() },
+    cache: append ? secTabState.cache : { ...secTabState.cache, [cacheKey]: { ...payload, rows: mergedRows } },
+    cacheAt: append ? secTabState.cacheAt : { ...secTabState.cacheAt, [cacheKey]: Date.now() },
   };
   return payload;
 }
@@ -4055,17 +4080,14 @@ function renderSecLoading(symbol = "AAPL") {
 
 function renderSecView() {
   const allRows = Array.isArray(secTabState.rows) ? secTabState.rows : [];
-  const impactFilter = String(secTabState.impactFilter || "all").toLowerCase();
-  const formFilter = String(secTabState.formFilter || "all").toUpperCase();
+  const category = String(secTabState.category || "all").toLowerCase();
   const hiddenRowIds = secTabState.hiddenRowIds && typeof secTabState.hiddenRowIds === "object" ? secTabState.hiddenRowIds : {};
-  const filteredRows = allRows.filter((row) => {
+  const visibleRows = allRows.filter((row) => {
     if (hiddenRowIds[row.rowId]) return false;
-    if (impactFilter !== "all" && String(row.importance || "").toLowerCase() !== impactFilter) return false;
-    if (formFilter !== "ALL" && String(row.form || "").toUpperCase() !== formFilter) return false;
     return true;
   });
-  const rowHtml = filteredRows.length
-    ? filteredRows
+  const rowHtml = visibleRows.length
+    ? visibleRows
         .map((row, index) => {
           const impactClass = String(row.importance || "").toLowerCase();
           return `
@@ -4086,6 +4108,9 @@ function renderSecView() {
         })
         .join("")
     : '<tr><td colspan="11">No rows match your current filters.</td></tr>';
+  const loadingMoreRow = secTabState.loadingMore
+    ? `<tr><td colspan="11"><div class="do-loading">Loading more SEC rows...</div></td></tr>`
+    : "";
   const quickChips = SEC_QUICK_SYMBOLS.map(
     (chip) => `<button type="button" class="watchboard-chip" data-sec-chip="${chip}">${chip}</button>`
   ).join("");
@@ -4093,6 +4118,7 @@ function renderSecView() {
   const source = String(meta?.source || "sec+heuristics");
   const failures = Array.isArray(meta?.failures) ? meta.failures : [];
   const updated = secTabState.fetchedAt ? new Date(secTabState.fetchedAt).toLocaleString() : "n/a";
+  const hasMore = Boolean(secTabState.hasMore);
 
   workspaceTableWrap.innerHTML = `
     <div class="agent-view">
@@ -4109,31 +4135,20 @@ function renderSecView() {
             <option value="180" ${Number(secTabState.days) === 180 ? "selected" : ""}>Last 180D</option>
             <option value="365" ${Number(secTabState.days) === 365 ? "selected" : ""}>Last 365D</option>
           </select>
-          <button type="submit" class="refresh-btn">Load Sheet</button>
           <button type="button" id="secGridForceBtn" class="refresh-btn">Refresh SEC</button>
         </form>
         <div class="watchboard-chip-row">${quickChips}</div>
         <div class="ticker-meta-inline">
           <span class="ticker-catalyst-chip">Rows: ${allRows.length}</span>
-          <span class="ticker-catalyst-chip">Visible: ${filteredRows.length}</span>
+          <span class="ticker-catalyst-chip">Visible: ${visibleRows.length}</span>
+          <span class="ticker-catalyst-chip">Total: ${Number(meta?.totalRows || visibleRows.length)}</span>
           <span class="ticker-catalyst-chip">Source: ${escapeHtml(source)}</span>
           <span class="ticker-catalyst-chip">Updated: ${escapeHtml(updated)}</span>
+          <span class="ticker-catalyst-chip">${hasMore ? "Endless scroll: on" : "Endless scroll: complete"}</span>
         </div>
       </section>
       <section class="schwab-card sec-sheet-controls">
         <form id="secGridFiltersForm" class="ticker-filters-inline">
-          <select id="secImpactFilter">
-            <option value="all" ${impactFilter === "all" ? "selected" : ""}>Importance: All</option>
-            <option value="high" ${impactFilter === "high" ? "selected" : ""}>Importance: High</option>
-            <option value="medium" ${impactFilter === "medium" ? "selected" : ""}>Importance: Medium</option>
-            <option value="low" ${impactFilter === "low" ? "selected" : ""}>Importance: Low</option>
-          </select>
-          <select id="secFormFilter">
-            <option value="ALL" ${formFilter === "ALL" ? "selected" : ""}>Form: All</option>
-            <option value="10-K" ${formFilter === "10-K" ? "selected" : ""}>10-K</option>
-            <option value="10-Q" ${formFilter === "10-Q" ? "selected" : ""}>10-Q</option>
-            <option value="8-K" ${formFilter === "8-K" ? "selected" : ""}>8-K</option>
-          </select>
           <button type="button" id="secClearHiddenBtn" class="refresh-btn">Unhide All</button>
         </form>
         ${
@@ -4154,7 +4169,20 @@ function renderSecView() {
           <thead>
             <tr>
               <th>#</th>
-              <th>Symbol</th>
+              <th class="sec-header-filter">
+                <label for="secCategorySelect">SEC</label>
+                <select id="secCategorySelect">
+                  <option value="all" ${category === "all" ? "selected" : ""}>All</option>
+                  <option value="date" ${category === "date" ? "selected" : ""}>Date</option>
+                  <option value="importance" ${category === "importance" ? "selected" : ""}>Importance level</option>
+                  <option value="military" ${category === "military" ? "selected" : ""}>Military / Defense</option>
+                  <option value="10k" ${category === "10k" ? "selected" : ""}>10-Ks</option>
+                  <option value="10q" ${category === "10q" ? "selected" : ""}>Quarterly 10-Qs</option>
+                  <option value="8k" ${category === "8k" ? "selected" : ""}>Event-driven 8-Ks</option>
+                  <option value="def14a" ${category === "def14a" ? "selected" : ""}>DEF 14A (Proxy Statement)</option>
+                  <option value="10k-annual" ${category === "10k-annual" ? "selected" : ""}>10-K (Annual Report)</option>
+                </select>
+              </th>
               <th>Company</th>
               <th>Form</th>
               <th>Filed Date</th>
@@ -4166,7 +4194,7 @@ function renderSecView() {
               <th>Action</th>
             </tr>
           </thead>
-          <tbody>${rowHtml}</tbody>
+          <tbody>${rowHtml}${loadingMoreRow}</tbody>
         </table>
       </section>
     </div>
@@ -4176,48 +4204,49 @@ function renderSecView() {
   const symbolsInput = document.getElementById("secGridSymbolsInput");
   const daysSelect = document.getElementById("secGridDaysSelect");
   const forceBtn = document.getElementById("secGridForceBtn");
-  const impactSelect = document.getElementById("secImpactFilter");
-  const formSelect = document.getElementById("secFormFilter");
+  const categorySelect = document.getElementById("secCategorySelect");
   const unhideBtn = document.getElementById("secClearHiddenBtn");
+  const sheetWrap = workspaceTableWrap.querySelector(".sec-sheet-wrap");
+
+  const applySheetFilters = (opts = {}) => {
+    const { force = false } = opts;
+    const nextSymbols = String(symbolsInput?.value || "").trim().toUpperCase();
+    const nextDays = Number(daysSelect?.value || secTabState.days || 180);
+    const nextCategory = String(categorySelect?.value || "all").trim().toLowerCase();
+    if (!nextSymbols) return;
+    secTabState = {
+      ...secTabState,
+      symbolsInput: nextSymbols,
+      days: nextDays,
+      category: nextCategory,
+      offset: 0,
+      hasMore: true,
+      loading: true,
+      loadingMore: false,
+      error: "",
+      sheetScrollTop: 0,
+    };
+    renderSecLoading(nextSymbols);
+    loadSecBrief({ symbolsInput: nextSymbols, days: nextDays, category: nextCategory, force, append: false })
+      .then(() => {
+        if (currentTab === SEC_TAB) renderSecView();
+      })
+      .catch((error) => {
+        secTabState = { ...secTabState, loading: false, loadingMore: false, error: error.message || "Failed to load SEC sheet." };
+        if (currentTab === SEC_TAB) renderSecView();
+      });
+  };
 
   form?.addEventListener("submit", (event) => {
     event.preventDefault();
-    const nextSymbols = String(symbolsInput?.value || "").trim().toUpperCase();
-    const nextDays = Number(daysSelect?.value || secTabState.days || 180);
-    if (!nextSymbols) return;
-    secTabState = { ...secTabState, symbolsInput: nextSymbols, days: nextDays, loading: true, error: "" };
-    renderSecLoading(nextSymbols);
-    loadSecBrief({ symbolsInput: nextSymbols, days: nextDays })
-      .then(() => {
-        if (currentTab === SEC_TAB) renderSecView();
-      })
-      .catch((error) => {
-        secTabState = { ...secTabState, loading: false, error: error.message || "Failed to load SEC sheet." };
-        if (currentTab === SEC_TAB) renderSecView();
-      });
+    applySheetFilters();
   });
+  symbolsInput?.addEventListener("change", () => applySheetFilters());
+  daysSelect?.addEventListener("change", () => applySheetFilters());
+  categorySelect?.addEventListener("change", () => applySheetFilters());
+
   forceBtn?.addEventListener("click", () => {
-    const nextSymbols = String(symbolsInput?.value || "").trim().toUpperCase();
-    const nextDays = Number(daysSelect?.value || secTabState.days || 180);
-    if (!nextSymbols) return;
-    secTabState = { ...secTabState, symbolsInput: nextSymbols, days: nextDays, loading: true, error: "" };
-    renderSecLoading(nextSymbols);
-    loadSecBrief({ symbolsInput: nextSymbols, days: nextDays, force: true })
-      .then(() => {
-        if (currentTab === SEC_TAB) renderSecView();
-      })
-      .catch((error) => {
-        secTabState = { ...secTabState, loading: false, error: error.message || "Failed to refresh SEC sheet." };
-        if (currentTab === SEC_TAB) renderSecView();
-      });
-  });
-  impactSelect?.addEventListener("change", () => {
-    secTabState = { ...secTabState, impactFilter: String(impactSelect.value || "all").toLowerCase() };
-    renderSecView();
-  });
-  formSelect?.addEventListener("change", () => {
-    secTabState = { ...secTabState, formFilter: String(formSelect.value || "ALL").toUpperCase() };
-    renderSecView();
+    applySheetFilters({ force: true });
   });
   unhideBtn?.addEventListener("click", () => {
     secTabState = { ...secTabState, hiddenRowIds: {} };
@@ -4241,9 +4270,9 @@ function renderSecView() {
       const currentSymbols = normalizeSecSymbolsInput(secTabState.symbolsInput || "");
       if (!currentSymbols.includes(chip)) currentSymbols.unshift(chip);
       const nextSymbols = [...new Set(currentSymbols)].slice(0, 25).join(",");
-      secTabState = { ...secTabState, symbolsInput: nextSymbols, loading: true, error: "" };
+      secTabState = { ...secTabState, symbolsInput: nextSymbols, offset: 0, hasMore: true, loading: true, error: "", sheetScrollTop: 0 };
       renderSecLoading(nextSymbols);
-      loadSecBrief({ symbolsInput: nextSymbols, days: secTabState.days })
+      loadSecBrief({ symbolsInput: nextSymbols, days: secTabState.days, category: secTabState.category, append: false })
         .then(() => {
           if (currentTab === SEC_TAB) renderSecView();
         })
@@ -4253,6 +4282,29 @@ function renderSecView() {
         });
     });
   });
+
+  if (sheetWrap) {
+    if (Number.isFinite(Number(secTabState.sheetScrollTop))) sheetWrap.scrollTop = Number(secTabState.sheetScrollTop || 0);
+    sheetWrap.addEventListener("scroll", () => {
+      secTabState = { ...secTabState, sheetScrollTop: sheetWrap.scrollTop };
+      if (secTabState.loading || secTabState.loadingMore || !secTabState.hasMore) return;
+      const nearBottom = sheetWrap.scrollTop + sheetWrap.clientHeight >= sheetWrap.scrollHeight - 140;
+      if (!nearBottom) return;
+      secTabState = { ...secTabState, loadingMore: true };
+      loadSecBrief({
+        symbolsInput: secTabState.symbolsInput,
+        days: secTabState.days,
+        category: secTabState.category,
+        append: true,
+      })
+        .then(() => {
+          if (currentTab === SEC_TAB) renderSecView();
+        })
+        .catch(() => {
+          secTabState = { ...secTabState, loadingMore: false };
+        });
+    });
+  }
 }
 
 function renderShoppingView() {

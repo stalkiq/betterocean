@@ -382,6 +382,26 @@ body {
   color: #e7f1ff;
 }
 
+.sec-header-filter {
+  min-width: 170px;
+}
+
+.sec-header-filter label {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.sec-header-filter select {
+  width: 100%;
+  min-width: 150px;
+  border: 1px solid #355885;
+  border-radius: 6px;
+  background: rgba(9, 25, 46, 0.95);
+  color: #dbe9ff;
+  padding: 4px 6px;
+  font-size: 11px;
+}
+
 .sec-impact {
   display: inline-flex;
   align-items: center;

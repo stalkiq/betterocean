@@ -749,6 +749,9 @@ function getSecImportanceForFiling(form, description = "") {
 function getSecTopicForFiling(form, description = "") {
   const safeForm = String(form || "").toUpperCase().trim();
   const text = String(description || "").toLowerCase();
+  if (/(defense|defence|military|weapon|weapons|missile|munition|munitions|aerospace|navy|army|air force|dod|department of defense|national security|combat|fighter jet|satellite defense)/i.test(text)) {
+    return "Military / Defense";
+  }
   if (safeForm === "8-K") {
     if (/(ceo|cfo|director|officer|appoint|resign)/i.test(text)) return "Leadership";
     if (/(litigation|lawsuit|investigation|legal|settlement)/i.test(text)) return "Legal";
@@ -783,11 +786,15 @@ async function buildSecGridRows({
   symbols = [],
   limit = 120,
   days = 180,
+  offset = 0,
+  category = "all",
 }) {
   const safeSymbols = [...new Set((Array.isArray(symbols) ? symbols : []).map((s) => normalizeTickerSymbol(s)).filter(Boolean))].slice(0, 25);
   const metaMap = await loadSecCompanyMetaMap().catch(() => ({}));
   const nameMap = await resolveCompanyNamesForSymbols(safeSymbols).catch(() => ({}));
   const maxAgeDays = Math.max(1, Number(days) || 180);
+  const safeOffset = Math.max(0, Number(offset) || 0);
+  const safeCategory = String(category || "all").trim().toLowerCase();
   const rows = [];
   const failures = [];
 
@@ -824,6 +831,7 @@ async function buildSecGridRows({
             description: String(filing.description || "").trim(),
             aiSummary: buildSecAiSummary(companyName, filing),
             secUrl: String(filing.secUrl || "").trim(),
+            sortDateMs: filedAt,
           });
         });
       } catch (err) {
@@ -832,18 +840,56 @@ async function buildSecGridRows({
     })
   );
 
-  const sorted = rows
-    .sort((a, b) => {
-      const scoreDelta = Number(b.importanceScore || 0) - Number(a.importanceScore || 0);
-      if (scoreDelta !== 0) return scoreDelta;
-      const dateDelta = Date.parse(String(b.filingDate || "")) - Date.parse(String(a.filingDate || ""));
-      if (Number.isFinite(dateDelta) && dateDelta !== 0) return dateDelta;
-      return String(a.symbol).localeCompare(String(b.symbol));
-    })
-    .slice(0, Math.max(20, Math.min(400, Number(limit) || 120)));
+  const sortedByImportance = [...rows].sort((a, b) => {
+    const scoreDelta = Number(b.importanceScore || 0) - Number(a.importanceScore || 0);
+    if (scoreDelta !== 0) return scoreDelta;
+    const dateDelta = Number(b.sortDateMs || 0) - Number(a.sortDateMs || 0);
+    if (dateDelta !== 0) return dateDelta;
+    return String(a.symbol).localeCompare(String(b.symbol));
+  });
+  const sortedByDate = [...rows].sort((a, b) => {
+    const dateDelta = Number(b.sortDateMs || 0) - Number(a.sortDateMs || 0);
+    if (dateDelta !== 0) return dateDelta;
+    return String(a.symbol).localeCompare(String(b.symbol));
+  });
+  const byCategory = (inputRows) => {
+    if (safeCategory === "all" || !safeCategory || safeCategory === "date" || safeCategory === "importance") return inputRows;
+    if (safeCategory === "military") {
+      return inputRows.filter((row) => String(row.topic || "").toLowerCase() === "military / defense");
+    }
+    if (safeCategory === "10k" || safeCategory === "10k-annual") {
+      return inputRows.filter((row) => String(row.form || "").toUpperCase() === "10-K");
+    }
+    if (safeCategory === "10q") {
+      return inputRows.filter((row) => String(row.form || "").toUpperCase() === "10-Q");
+    }
+    if (safeCategory === "8k") {
+      return inputRows.filter((row) => String(row.form || "").toUpperCase() === "8-K");
+    }
+    if (safeCategory === "def14a") {
+      return inputRows.filter((row) => /^DEF\s*14A$/i.test(String(row.form || "").toUpperCase()));
+    }
+    return inputRows;
+  };
+  const ranked = safeCategory === "date" ? sortedByDate : sortedByImportance;
+  const filtered = byCategory(ranked);
+  const total = filtered.length;
+  const sorted = filtered
+    .slice(safeOffset, safeOffset + Math.max(20, Math.min(400, Number(limit) || 120)))
+    .map((row) => {
+      const { sortDateMs, ...clean } = row;
+      return clean;
+    });
+  const nextOffset = safeOffset + sorted.length;
+  const hasMore = nextOffset < total;
 
   return {
     rows: sorted,
+    total,
+    offset: safeOffset,
+    nextOffset,
+    hasMore,
+    category: safeCategory || "all",
     failures,
     asOf: new Date().toISOString(),
   };
@@ -2808,8 +2854,12 @@ app.get(["/market/sec-grid", "/api/market/sec-grid"], async (req, res) => {
   }
   const limit = Math.max(20, Math.min(400, Number(req.query.limit || 120)));
   const days = Math.max(7, Math.min(365, Number(req.query.days || 180)));
+  const offset = Math.max(0, Number(req.query.offset || 0));
+  const category = String(req.query.category || "all")
+    .trim()
+    .toLowerCase();
   const force = /^(1|true|yes)$/i.test(String(req.query.force || "").trim());
-  const redisKey = buildRedisCacheKey("sec-grid-v1", `${symbols.join(",")}|${limit}|${days}`);
+  const redisKey = buildRedisCacheKey("sec-grid-v2", `${symbols.join(",")}|${limit}|${days}|${offset}|${category}`);
   if (!force) {
     const redisCached = await getRedisCacheJson(redisKey);
     if (redisCached) {
@@ -2818,11 +2868,16 @@ app.get(["/market/sec-grid", "/api/market/sec-grid"], async (req, res) => {
     }
   }
   try {
-    const payload = await buildSecGridRows({ symbols, limit, days });
+    const payload = await buildSecGridRows({ symbols, limit, days, offset, category });
     const response = {
       symbols,
       limit,
       days,
+      offset: Number(payload.offset || 0),
+      nextOffset: Number(payload.nextOffset || 0),
+      hasMore: Boolean(payload.hasMore),
+      totalRows: Number(payload.total || 0),
+      category: payload.category || category,
       rowCount: Number(payload.rows?.length || 0),
       rows: payload.rows || [],
       failures: payload.failures || [],
