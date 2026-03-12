@@ -36,6 +36,7 @@ const sessionStore = new Map();
 const tickerUniverseCache = { symbols: [], fetchedAt: 0 };
 const secCompanyTickerCache = { bySymbol: {}, fetchedAt: 0 };
 const secCompanyMetaCache = { bySymbol: {}, fetchedAt: 0 };
+const secSubmissionsCache = new Map();
 const marketOverviewCache = { data: null, fetchedAt: 0 };
 const openingPlaybookCache = { data: null, fetchedAt: 0 };
 const tickerWatchboardsCache = { data: null, fetchedAt: 0 };
@@ -587,6 +588,10 @@ function trimToWords(value, maxWords = 28) {
   return `${words.slice(0, maxWords).join(" ")}...`;
 }
 
+function waitMs(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
 function getCompanyLookupName(symbol) {
   const safe = normalizeTickerSymbol(symbol);
   return SYMBOL_COMPANY_LOOKUP[safe] || safe;
@@ -704,14 +709,49 @@ function extractRecentSecFilings(submissionsPayload, cik, limit = 8) {
 async function fetchSecSubmissionsByCik(cik) {
   const safeCik = formatSecCik(cik);
   if (!safeCik) return null;
-  const upstream = await getText(`https://data.sec.gov/submissions/CIK${safeCik}.json`, {
-    "User-Agent": "BetterOcean/1.0 (support@betterocean.app)",
-    Accept: "application/json",
-  });
-  if (upstream.status < 200 || upstream.status >= 300) {
-    throw new Error(`SEC submissions request failed (${upstream.status})`);
+  const cacheTtlMs = Number(process.env.SEC_SUBMISSIONS_TTL_MS || 6 * 60 * 60 * 1000);
+  const cacheEntry = secSubmissionsCache.get(safeCik);
+  if (cacheEntry && Date.now() - Number(cacheEntry.fetchedAt || 0) < cacheTtlMs) {
+    return cacheEntry.data;
   }
-  return safeParseJson(upstream.data || "{}") || {};
+
+  const redisKey = buildRedisCacheKey("sec-submissions-v1", safeCik);
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached && typeof redisCached === "object" && redisCached !== null && redisCached.filings) {
+    secSubmissionsCache.set(safeCik, { data: redisCached, fetchedAt: Date.now() });
+    return redisCached;
+  }
+
+  let lastStatus = 0;
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const upstream = await getText(`https://data.sec.gov/submissions/CIK${safeCik}.json`, {
+        "User-Agent": "BetterOcean/1.0 (support@betterocean.app)",
+        Accept: "application/json",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Cache-Control": "no-cache",
+      });
+      lastStatus = Number(upstream.status || 0);
+      if (lastStatus >= 200 && lastStatus < 300) {
+        const parsed = safeParseJson(upstream.data || "{}") || {};
+        const hasFilings = Array.isArray(parsed?.filings?.recent?.form) && parsed.filings.recent.form.length > 0;
+        if (hasFilings) {
+          secSubmissionsCache.set(safeCik, { data: parsed, fetchedAt: Date.now() });
+          await setRedisCacheJson(redisKey, parsed, cacheTtlMs);
+          return parsed;
+        }
+      }
+    } catch (err) {
+      lastError = err;
+    }
+    await waitMs(240 * (attempt + 1));
+  }
+
+  if (cacheEntry && cacheEntry.data) return cacheEntry.data;
+  if (redisCached && typeof redisCached === "object") return redisCached;
+  const msg = lastStatus ? `SEC submissions request failed (${lastStatus})` : (lastError?.message || "SEC submissions request failed");
+  throw new Error(msg);
 }
 
 function buildSecBriefFallback(symbol, companyName, filings = []) {
@@ -852,47 +892,46 @@ async function buildSecGridRows({
   const rows = [];
   const failures = [];
 
-  await Promise.all(
-    safeSymbols.map(async (symbol) => {
-      const meta = metaMap?.[symbol] || null;
-      const companyName = String(meta?.name || nameMap?.[symbol] || getCompanyLookupName(symbol) || symbol).trim();
-      const cik = formatSecCik(meta?.cik || "");
-      if (!cik) {
-        failures.push({ symbol, reason: "missing-cik" });
-        return;
-      }
-      try {
-        const submissions = await fetchSecSubmissionsByCik(cik);
-        const filings = extractRecentSecFilings(submissions, cik, 24);
-        filings.forEach((filing) => {
-          const filedAt = Date.parse(String(filing?.filingDate || ""));
-          if (!Number.isFinite(filedAt)) return;
-          const daysAgo = formatFilingDaysAgo(filing.filingDate);
-          if (Number.isFinite(daysAgo) && daysAgo > maxAgeDays) return;
-          const importance = getSecImportanceForFiling(filing.form, filing.description || "");
-          const topic = getSecTopicForFiling(filing.form, filing.description || "");
-          rows.push({
-            rowId: `${symbol}:${filing.accessionNumber}`,
-            symbol,
-            companyName,
-            cik,
-            form: String(filing.form || "").toUpperCase(),
-            filingDate: filing.filingDate,
-            daysAgo,
-            importance: importance.label,
-            importanceScore: importance.score,
-            topic,
-            description: String(filing.description || "").trim(),
-            aiSummary: buildSecAiSummary(companyName, filing),
-            secUrl: String(filing.secUrl || "").trim(),
-            sortDateMs: filedAt,
-          });
+  for (const symbol of safeSymbols) {
+    const meta = metaMap?.[symbol] || null;
+    const companyName = String(meta?.name || nameMap?.[symbol] || getCompanyLookupName(symbol) || symbol).trim();
+    const cik = formatSecCik(meta?.cik || "");
+    if (!cik) {
+      failures.push({ symbol, reason: "missing-cik" });
+      continue;
+    }
+    try {
+      const submissions = await fetchSecSubmissionsByCik(cik);
+      const filings = extractRecentSecFilings(submissions, cik, 24);
+      filings.forEach((filing) => {
+        const filedAt = Date.parse(String(filing?.filingDate || ""));
+        if (!Number.isFinite(filedAt)) return;
+        const daysAgo = formatFilingDaysAgo(filing.filingDate);
+        if (Number.isFinite(daysAgo) && daysAgo > maxAgeDays) return;
+        const importance = getSecImportanceForFiling(filing.form, filing.description || "");
+        const topic = getSecTopicForFiling(filing.form, filing.description || "");
+        rows.push({
+          rowId: `${symbol}:${filing.accessionNumber}`,
+          symbol,
+          companyName,
+          cik,
+          form: String(filing.form || "").toUpperCase(),
+          filingDate: filing.filingDate,
+          daysAgo,
+          importance: importance.label,
+          importanceScore: importance.score,
+          topic,
+          description: String(filing.description || "").trim(),
+          aiSummary: buildSecAiSummary(companyName, filing),
+          secUrl: String(filing.secUrl || "").trim(),
+          sortDateMs: filedAt,
         });
-      } catch (err) {
-        failures.push({ symbol, reason: err?.message || "sec-fetch-failed" });
-      }
-    })
-  );
+      });
+    } catch (err) {
+      failures.push({ symbol, reason: err?.message || "sec-fetch-failed" });
+    }
+    await waitMs(120);
+  }
 
   const sortedByImportance = [...rows].sort((a, b) => {
     const scoreDelta = Number(b.importanceScore || 0) - Number(a.importanceScore || 0);
@@ -927,6 +966,20 @@ async function buildSecGridRows({
   };
   const ranked = safeCategory === "date" ? sortedByDate : sortedByImportance;
   const filtered = byCategory(ranked);
+  const presentSymbols = new Set(filtered.map((row) => String(row.symbol || "")));
+  if (presentSymbols.size < safeSymbols.length) {
+    const fallbackSeed = buildSecMetaFallbackRows({
+      safeSymbols,
+      metaMap,
+      nameMap,
+      category: safeCategory,
+      limit: safeSymbols.length + 10,
+      offset: 0,
+    });
+    fallbackSeed.rows.forEach((row) => {
+      if (!presentSymbols.has(row.symbol)) filtered.push(row);
+    });
+  }
   const total = filtered.length;
   const sorted = filtered
     .slice(safeOffset, safeOffset + Math.max(20, Math.min(400, Number(limit) || 120)))
