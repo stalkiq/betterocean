@@ -887,7 +887,7 @@ function buildSecMetaFallbackRows({
     };
   });
   const total = rows.length;
-  const pageSize = Math.max(20, Math.min(400, Number(limit) || 120));
+  const pageSize = Math.max(5, Math.min(5, Number(limit) || 5));
   const safeOffset = Math.max(0, Number(offset) || 0);
   const page = rows.slice(safeOffset, safeOffset + pageSize);
   return {
@@ -1005,7 +1005,7 @@ async function buildSecGridRows({
   }
   const total = filtered.length;
   const sorted = filtered
-    .slice(safeOffset, safeOffset + Math.max(20, Math.min(400, Number(limit) || 120)))
+    .slice(safeOffset, safeOffset + Math.max(5, Math.min(5, Number(limit) || 5)))
     .map((row) => {
       const { sortDateMs, ...clean } = row;
       return clean;
@@ -3001,7 +3001,7 @@ app.get(["/market/sec-grid", "/api/market/sec-grid"], async (req, res) => {
     .map((s) => normalizeTickerSymbol(s))
     .filter(Boolean)
     .slice(0, 200);
-  const limit = Math.max(10, Math.min(30, Number(req.query.limit || 30)));
+  const limit = Math.max(5, Math.min(5, Number(req.query.limit || 5)));
   const days = Math.max(7, Math.min(365, Number(req.query.days || 180)));
   const offset = Math.max(0, Number(req.query.offset || 0));
   const category = String(req.query.category || "all")

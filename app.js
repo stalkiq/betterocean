@@ -128,10 +128,10 @@ let openingQuotesBySymbol = {};
 let secTabState = {
   symbolsInput: "ALL",
   days: 180,
-  category: "all",
+  category: "readable",
   hiddenRowIds: {},
   offset: 0,
-  limit: 30,
+  limit: 5,
   hasMore: true,
   loadingMore: false,
   sheetScrollTop: 0,
@@ -432,8 +432,8 @@ async function loadSecBrief(options = {}) {
   const allMode = symbols.length === 0;
   const symbolsKey = allMode ? "ALL" : symbols.join(",");
   const safeDays = Math.max(7, Math.min(365, Number(days) || 180));
-  const safeCategory = String(category || "all").trim().toLowerCase();
-  const safeLimit = Math.max(10, Math.min(30, Number(limit) || 30));
+  const safeCategory = String(category || "readable").trim().toLowerCase();
+  const safeLimit = Math.max(5, Math.min(5, Number(limit) || 5));
   const nextOffset = append ? Math.max(0, Number(secTabState.offset || 0)) : 0;
   const cacheKey = `${symbolsKey}|${safeDays}|${safeCategory}|${safeLimit}|0`;
   const cached = secTabState.cache[cacheKey];
@@ -4116,7 +4116,7 @@ function renderSecLoading(symbol = "AAPL") {
 
 function renderSecView() {
   const allRows = Array.isArray(secTabState.rows) ? secTabState.rows : [];
-  const category = String(secTabState.category || "all").toLowerCase();
+  const category = String(secTabState.category || "readable").toLowerCase();
   const visibleRows = allRows;
   const readable = secTabState.readable && typeof secTabState.readable === "object" ? secTabState.readable : null;
   const readableBullets = Array.isArray(readable?.bullets) ? readable.bullets.slice(0, 4) : [];
@@ -4131,7 +4131,6 @@ function renderSecView() {
             <td class="sec-row-index">${index + 1}</td>
             <td class="sec-col-symbol">${escapeHtml(row.symbol || "-")}</td>
             <td>${escapeHtml(row.companyName || "-")}</td>
-            <td>${escapeHtml(row.form || "-")}</td>
             <td>${escapeHtml(row.filingDate || "-")}</td>
             <td>${Number.isFinite(Number(row.daysAgo)) ? Number(row.daysAgo) : "-"}</td>
             <td><span class="sec-impact ${impactClass}">${escapeHtml(row.importance || "Low")}</span></td>
@@ -4141,18 +4140,17 @@ function renderSecView() {
               <button type="button" class="refresh-btn sec-readable-btn" data-sec-readable-idx="${index}" ${readingThisRow ? "disabled" : ""}>
                 ${readingThisRow ? "Reading..." : "Readable"}
               </button>
-              ${row.secUrl ? `<a href="${escapeHtml(row.secUrl)}" target="_blank" rel="noopener noreferrer">SEC</a>` : "-"}
             </td>
           </tr>
         `;
         })
         .join("")
-    : '<tr><td colspan="10">No rows found yet.</td></tr>';
+    : '<tr><td colspan="9">No rows found yet.</td></tr>';
   const loadingMoreRow = secTabState.loadingMore
-    ? `<tr><td colspan="10"><div class="do-loading">Loading more SEC rows...</div></td></tr>`
+    ? `<tr><td colspan="9"><div class="do-loading">Loading more SEC rows...</div></td></tr>`
     : "";
   const errorRow = secTabState.error
-    ? `<tr><td colspan="10"><div class="do-error"><strong>Error</strong><p>${escapeHtml(secTabState.error)}</p></div></td></tr>`
+    ? `<tr><td colspan="9"><div class="do-error"><strong>Error</strong><p>${escapeHtml(secTabState.error)}</p></div></td></tr>`
     : "";
 
   workspaceTableWrap.innerHTML = `
@@ -4164,19 +4162,10 @@ function renderSecView() {
             <th class="sec-header-filter">
               <label for="secCategorySelect">SEC</label>
               <select id="secCategorySelect">
-                <option value="all" ${category === "all" ? "selected" : ""}>All</option>
-                <option value="date" ${category === "date" ? "selected" : ""}>Date</option>
-                <option value="importance" ${category === "importance" ? "selected" : ""}>Importance level</option>
-                <option value="military" ${category === "military" ? "selected" : ""}>Military / Defense</option>
-                <option value="10k" ${category === "10k" ? "selected" : ""}>10-Ks</option>
-                <option value="10q" ${category === "10q" ? "selected" : ""}>Quarterly 10-Qs</option>
-                <option value="8k" ${category === "8k" ? "selected" : ""}>Event-driven 8-Ks</option>
-                <option value="def14a" ${category === "def14a" ? "selected" : ""}>DEF 14A (Proxy Statement)</option>
-                <option value="10k-annual" ${category === "10k-annual" ? "selected" : ""}>10-K (Annual Report)</option>
+                <option value="readable" ${category === "readable" ? "selected" : ""}>Readable only</option>
               </select>
             </th>
             <th>Company</th>
-            <th>Form</th>
             <th>Filed Date</th>
             <th>Days Ago</th>
             <th>Importance</th>
@@ -4192,7 +4181,7 @@ function renderSecView() {
       <h4>${escapeHtml(readable?.headline || "Plain English Filing Brief")}</h4>
       <p class="schwab-card-sub">${
         readable
-          ? `${escapeHtml(readable?.symbol || "")} ${escapeHtml(readable?.form || "")} ${escapeHtml(readable?.filingDate || "")}`.trim()
+          ? `${escapeHtml(readable?.symbol || "")} ${escapeHtml(readable?.filingDate || "")}`.trim()
           : "Click Readable on any row to get a plain-English summary."
       }</p>
       ${
@@ -4203,11 +4192,6 @@ function renderSecView() {
       <ul class="ticker-bullets">
         ${(readableBullets.length ? readableBullets : ["No brief loaded yet."]).map((line) => `<li>${escapeHtml(line)}</li>`).join("")}
       </ul>
-      ${
-        readable?.sourceUrl
-          ? `<a href="${escapeHtml(readable.sourceUrl)}" target="_blank" rel="noopener noreferrer">Open SEC source</a>`
-          : ""
-      }
     </section>
   `;
 
@@ -4215,7 +4199,7 @@ function renderSecView() {
   const sheetWrap = workspaceTableWrap.querySelector(".sec-sheet-wrap");
 
   categorySelect?.addEventListener("change", () => {
-    const nextCategory = String(categorySelect?.value || "all").trim().toLowerCase();
+    const nextCategory = String(categorySelect?.value || "readable").trim().toLowerCase();
     secTabState = {
       ...secTabState,
       category: nextCategory,
