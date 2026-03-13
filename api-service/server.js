@@ -27,6 +27,9 @@ const SEC_BRIEF_TTL_MS = Number(process.env.SEC_BRIEF_TTL_MS || 15 * 60 * 1000);
 const TICKER_WATCHBOARDS_TTL_MS = Number(process.env.TICKER_WATCHBOARDS_TTL_MS || 3 * 60 * 1000);
 const AGENT_BRIEF_TTL_MS = Number(process.env.AGENT_BRIEF_TTL_MS || 3 * 60 * 1000);
 const SCHWAB_CACHE_TTL_MS = Number(process.env.SCHWAB_CACHE_TTL_MS || 12 * 1000);
+const SCHWAB_QUOTES_CACHE_TTL_MS = Number(process.env.SCHWAB_QUOTES_CACHE_TTL_MS || 5 * 1000);
+const SCHWAB_RECENT_ORDERS_CACHE_TTL_MS = Number(process.env.SCHWAB_RECENT_ORDERS_CACHE_TTL_MS || 10 * 1000);
+const SEC_READABLE_TTL_MS = Number(process.env.SEC_READABLE_TTL_MS || 60 * 60 * 1000);
 const SEC_COMPANY_TICKERS_TTL_MS = Number(process.env.SEC_COMPANY_TICKERS_TTL_MS || 24 * 60 * 60 * 1000);
 const TICKER_PREWARM_INTERVAL_MS = Number(process.env.TICKER_PREWARM_INTERVAL_MS || 120 * 1000);
 const REDIS_URL = process.env.REDIS_URL || process.env.DO_REDIS_URL || "";
@@ -3090,6 +3093,18 @@ app.post(["/market/sec-readable", "/api/market/sec-readable"], async (req, res) 
   const topic = String(payload.topic || "").trim();
   const importance = String(payload.importance || "").trim();
   const sourceUrl = String(payload.secUrl || "").trim();
+  const force = /^(1|true|yes)$/i.test(String(req.query.force || "").trim());
+  const cacheId = hashPayloadForCache({
+    symbol,
+    companyName,
+    form,
+    filingDate,
+    description,
+    topic,
+    importance,
+    sourceUrl,
+  });
+  const redisKey = buildRedisCacheKey("sec-readable-v1", cacheId);
 
   const fallback = buildSecReadableFallback({
     symbol,
@@ -3101,10 +3116,18 @@ app.post(["/market/sec-readable", "/api/market/sec-readable"], async (req, res) 
     importance,
     secUrl: sourceUrl,
   });
+  if (!force) {
+    const redisCached = await getRedisCacheJson(redisKey);
+    if (redisCached && typeof redisCached === "object") {
+      sendJson(res, 200, redisCached);
+      return;
+    }
+  }
 
   const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
   const key = process.env.GRADIENT_AGENT_KEY;
   if (!endpoint || !key) {
+    await setRedisCacheJson(redisKey, fallback, SEC_READABLE_TTL_MS);
     sendJson(res, 200, fallback);
     return;
   }
@@ -3151,8 +3174,10 @@ Rules:
       asOf: new Date().toISOString(),
     };
     if (!response.bullets.length) response.bullets = fallback.bullets;
+    await setRedisCacheJson(redisKey, response, SEC_READABLE_TTL_MS);
     sendJson(res, 200, response);
   } catch {
+    await setRedisCacheJson(redisKey, fallback, SEC_READABLE_TTL_MS);
     sendJson(res, 200, fallback);
   }
 });
@@ -3447,6 +3472,12 @@ app.get(["/schwab/positions", "/api/schwab/positions"], requireSchwabAuth, async
     sendJson(res, 400, { error: "No account hash available for positions." });
     return;
   }
+  const cacheKey = `positions:${String(accountHash)}`;
+  const cached = readSessionCache(req.session, cacheKey, SCHWAB_CACHE_TTL_MS);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
   try {
     const result = await schwabRequestWithSession(
       req.session,
@@ -3455,7 +3486,11 @@ app.get(["/schwab/positions", "/api/schwab/positions"], requireSchwabAuth, async
       { fields: "positions" }
     );
     const positions = result.data?.securitiesAccount?.positions || result.data?.positions || [];
-    sendJson(res, result.status, { accountHash, positions, raw: result.data });
+    const payload = { accountHash, positions, raw: result.data };
+    if (result.status >= 200 && result.status < 300) {
+      writeSessionCache(req.session, cacheKey, payload);
+    }
+    sendJson(res, result.status, payload);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to fetch positions." });
   }
@@ -3467,6 +3502,12 @@ app.get(["/schwab/balances", "/api/schwab/balances"], requireSchwabAuth, async (
     sendJson(res, 400, { error: "No account hash available for balances." });
     return;
   }
+  const cacheKey = `balances:${String(accountHash)}`;
+  const cached = readSessionCache(req.session, cacheKey, SCHWAB_CACHE_TTL_MS);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
   try {
     const result = await schwabRequestWithSession(
       req.session,
@@ -3474,7 +3515,11 @@ app.get(["/schwab/balances", "/api/schwab/balances"], requireSchwabAuth, async (
       `/accounts/${encodeURIComponent(String(accountHash))}`
     );
     const balances = result.data?.securitiesAccount?.currentBalances || result.data?.balances || {};
-    sendJson(res, result.status, { accountHash, balances, raw: result.data });
+    const payload = { accountHash, balances, raw: result.data };
+    if (result.status >= 200 && result.status < 300) {
+      writeSessionCache(req.session, cacheKey, payload);
+    }
+    sendJson(res, result.status, payload);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to fetch balances." });
   }
@@ -3522,10 +3567,25 @@ app.get(["/schwab/orders/open", "/api/schwab/orders/open"], requireSchwabAuth, a
 app.get(["/schwab/quotes", "/api/schwab/quotes"], requireSchwabAuth, async (req, res) => {
   const symbols = String(req.query.symbols || "")
     .split(",")
-    .map((s) => s.trim())
+    .map((s) => normalizeTickerSymbol(s))
     .filter(Boolean);
   if (!symbols.length) {
     sendJson(res, 400, { error: "symbols query param is required (comma-separated)." });
+    return;
+  }
+  const uniqueSorted = [...new Set(symbols)].sort();
+  const fields = String(req.query.fields || "quote");
+  const sessionCacheKey = `quotes:${fields}:${uniqueSorted.join(",")}`;
+  const sessionCached = readSessionCache(req.session, sessionCacheKey, SCHWAB_QUOTES_CACHE_TTL_MS);
+  if (sessionCached) {
+    sendJson(res, 200, sessionCached);
+    return;
+  }
+  const redisKey = buildRedisCacheKey("schwab-quotes-v1", `${fields}|${uniqueSorted.join(",")}`);
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached) {
+    writeSessionCache(req.session, sessionCacheKey, redisCached);
+    sendJson(res, 200, redisCached);
     return;
   }
   try {
@@ -3533,8 +3593,12 @@ app.get(["/schwab/quotes", "/api/schwab/quotes"], requireSchwabAuth, async (req,
       req.session,
       "GET",
       "/marketdata/quotes",
-      { symbols: symbols.join(","), fields: req.query.fields || "quote" }
+      { symbols: uniqueSorted.join(","), fields }
     );
+    if (result.status >= 200 && result.status < 300) {
+      writeSessionCache(req.session, sessionCacheKey, result.data);
+      await setRedisCacheJson(redisKey, result.data, SCHWAB_QUOTES_CACHE_TTL_MS);
+    }
     sendJson(res, result.status, result.data);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to fetch quotes." });
@@ -3653,6 +3717,12 @@ app.get(["/schwab/orders/recent", "/api/schwab/orders/recent"], requireSchwabAut
   const now = new Date();
   const from = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
   const to = now.toISOString();
+  const cacheKey = `orders-recent:${String(accountHash)}:${maxResults}`;
+  const cached = readSessionCache(req.session, cacheKey, SCHWAB_RECENT_ORDERS_CACHE_TTL_MS);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
   try {
     const result = await schwabRequestWithSession(
       req.session,
@@ -3669,7 +3739,11 @@ app.get(["/schwab/orders/recent", "/api/schwab/orders/recent"], requireSchwabAut
       .slice()
       .sort((a, b) => Date.parse(b?.enteredTime || 0) - Date.parse(a?.enteredTime || 0))
       .slice(0, maxResults);
-    sendJson(res, result.status, { accountHash, orders: sorted, rawCount: list.length });
+    const payload = { accountHash, orders: sorted, rawCount: list.length };
+    if (result.status >= 200 && result.status < 300) {
+      writeSessionCache(req.session, cacheKey, payload);
+    }
+    sendJson(res, result.status, payload);
   } catch (err) {
     sendJson(res, err.status || 502, { error: err.message || "Failed to fetch recent orders." });
   }
@@ -3719,7 +3793,10 @@ app.post(["/schwab/orders", "/api/schwab/orders"], requireSchwabAuth, async (req
     );
     if (result.status >= 200 && result.status < 300) {
       clearSessionCacheByPrefix(req.session, "orders-open:");
+      clearSessionCacheByPrefix(req.session, "orders-recent:");
       clearSessionCacheByPrefix(req.session, "accounts:");
+      clearSessionCacheByPrefix(req.session, "positions:");
+      clearSessionCacheByPrefix(req.session, "balances:");
       sendJson(res, result.status, {
         ok: true,
         result: result.data,
@@ -3757,7 +3834,10 @@ app.delete(["/schwab/orders/:orderId", "/api/schwab/orders/:orderId"], requireSc
     );
     if (result.status >= 200 && result.status < 300) {
       clearSessionCacheByPrefix(req.session, "orders-open:");
+      clearSessionCacheByPrefix(req.session, "orders-recent:");
       clearSessionCacheByPrefix(req.session, "accounts:");
+      clearSessionCacheByPrefix(req.session, "positions:");
+      clearSessionCacheByPrefix(req.session, "balances:");
     }
     sendJson(res, result.status, { ok: result.status >= 200 && result.status < 300, result: result.data });
   } catch (err) {
