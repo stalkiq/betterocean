@@ -453,6 +453,43 @@ body {
   margin-top: 10px;
 }
 
+.sec-data-row {
+  cursor: pointer;
+}
+
+.sec-expanded-row td {
+  background: rgba(23, 42, 74, 0.82);
+  border-top: 1px dashed #3d5f8f;
+}
+
+.sec-signal {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  border: 1px solid #486692;
+}
+
+.sec-signal-action {
+  background: rgba(72, 132, 212, 0.28);
+  color: #e6f3ff;
+  border-color: #67a1ea;
+}
+
+.sec-signal-watch {
+  background: rgba(64, 107, 168, 0.26);
+  color: #d9eaff;
+  border-color: #5f8fcb;
+}
+
+.sec-signal-low {
+  background: rgba(45, 69, 106, 0.28);
+  color: #c8dcfa;
+  border-color: #4b6e9f;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

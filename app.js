@@ -143,6 +143,7 @@ let secTabState = {
   readableLoadingRowId: "",
   readableError: "",
   readableCache: {},
+  expandedRowId: "",
   fetchedAt: 0,
   cache: {},
   cacheAt: {},
@@ -477,6 +478,10 @@ async function loadSecBrief(options = {}) {
     loading: false,
     error: "",
     rows: mergedRows,
+    readable: append ? secTabState.readable : null,
+    readableLoadingRowId: "",
+    readableError: "",
+    expandedRowId: append ? secTabState.expandedRowId : "",
     meta: payload,
     fetchedAt: Date.now(),
     cache: append ? secTabState.cache : { ...secTabState.cache, [cacheKey]: { ...payload, rows: mergedRows } },
@@ -512,6 +517,35 @@ async function loadSecReadableSummary(row, options = {}) {
     },
   };
   return payload;
+}
+
+function getSecReadableSignal(row = {}) {
+  const importance = String(row.importance || "").toLowerCase();
+  const daysAgo = Number(row.daysAgo);
+  if (importance === "high" || (Number.isFinite(daysAgo) && daysAgo <= 1)) {
+    return { label: "Actionable", className: "sec-signal-action" };
+  }
+  if (importance === "medium" || (Number.isFinite(daysAgo) && daysAgo <= 7)) {
+    return { label: "Watch", className: "sec-signal-watch" };
+  }
+  return { label: "Low urgency", className: "sec-signal-low" };
+}
+
+function getSecTopicLabel(topic = "") {
+  const clean = String(topic || "").trim();
+  if (!clean) return "Company filing update";
+  if (clean.toLowerCase() === "sec registry") return "Company profile update";
+  if (clean.toLowerCase() === "material update") return "Major business update";
+  return clean;
+}
+
+function getSecSummaryLabel(row = {}) {
+  const summary = String(row.aiSummary || row.description || "").trim();
+  if (!summary) return "SEC filing activity detected.";
+  if (/listed in sec company tickers metadata/i.test(summary)) {
+    return "SEC has this company profile on file. Deeper filing context may load next.";
+  }
+  return summary;
 }
 
 async function loadTickerIntelReport(symbol, options = {}) {
@@ -4126,31 +4160,54 @@ function renderSecView() {
           const impactClass = String(row.importance || "").toLowerCase();
           const rowId = String(row.rowId || `${row.symbol || "sec"}-${index}`);
           const readingThisRow = secTabState.readableLoadingRowId === rowId;
+          const signal = getSecReadableSignal(row);
+          const topicLabel = getSecTopicLabel(row.topic || "");
+          const summaryLabel = getSecSummaryLabel(row);
+          const isExpanded = secTabState.expandedRowId === rowId;
+          const cachedReadable = secTabState.readableCache?.[rowId];
+          const expandedBullets = Array.isArray(cachedReadable?.bullets) ? cachedReadable.bullets.slice(0, 3) : [];
+          const expandedHtml = isExpanded
+            ? `
+          <tr class="sec-expanded-row">
+            <td colspan="10">
+              ${
+                readingThisRow
+                  ? '<div class="do-loading">Building plain-English brief...</div>'
+                  : expandedBullets.length
+                    ? `<ul class="ticker-bullets">${expandedBullets.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>`
+                    : '<p class="settings-desc">Click Readable to load plain-English details.</p>'
+              }
+            </td>
+          </tr>
+          `
+            : "";
           return `
-          <tr>
+          <tr class="sec-data-row ${isExpanded ? "is-expanded" : ""}" data-sec-row-idx="${index}">
             <td class="sec-row-index">${index + 1}</td>
             <td class="sec-col-symbol">${escapeHtml(row.symbol || "-")}</td>
             <td>${escapeHtml(row.companyName || "-")}</td>
             <td>${escapeHtml(row.filingDate || "-")}</td>
             <td>${Number.isFinite(Number(row.daysAgo)) ? Number(row.daysAgo) : "-"}</td>
             <td><span class="sec-impact ${impactClass}">${escapeHtml(row.importance || "Low")}</span></td>
-            <td>${escapeHtml(row.topic || "-")}</td>
-            <td>${escapeHtml(row.aiSummary || row.description || "-")}</td>
+            <td><span class="sec-signal ${signal.className}">${escapeHtml(signal.label)}</span></td>
+            <td>${escapeHtml(topicLabel)}</td>
+            <td>${escapeHtml(summaryLabel)}</td>
             <td class="sec-source-cell">
               <button type="button" class="refresh-btn sec-readable-btn" data-sec-readable-idx="${index}" ${readingThisRow ? "disabled" : ""}>
                 ${readingThisRow ? "Reading..." : "Readable"}
               </button>
             </td>
           </tr>
+          ${expandedHtml}
         `;
         })
         .join("")
-    : '<tr><td colspan="9">No rows found yet.</td></tr>';
+    : '<tr><td colspan="10">No rows found yet.</td></tr>';
   const loadingMoreRow = secTabState.loadingMore
-    ? `<tr><td colspan="9"><div class="do-loading">Loading more SEC rows...</div></td></tr>`
+    ? `<tr><td colspan="10"><div class="do-loading">Loading more SEC rows...</div></td></tr>`
     : "";
   const errorRow = secTabState.error
-    ? `<tr><td colspan="9"><div class="do-error"><strong>Error</strong><p>${escapeHtml(secTabState.error)}</p></div></td></tr>`
+    ? `<tr><td colspan="10"><div class="do-error"><strong>Error</strong><p>${escapeHtml(secTabState.error)}</p></div></td></tr>`
     : "";
 
   workspaceTableWrap.innerHTML = `
@@ -4169,6 +4226,7 @@ function renderSecView() {
             <th>Filed Date</th>
             <th>Days Ago</th>
             <th>Importance</th>
+            <th>Readable Signal</th>
             <th>Topic</th>
             <th>AI Summary</th>
             <th>Source</th>
@@ -4210,6 +4268,11 @@ function renderSecView() {
       error: "",
       sheetScrollTop: 0,
       rows: [],
+      readable: null,
+      readableLoadingRowId: "",
+      readableError: "",
+      readableCache: {},
+      expandedRowId: "",
     };
     renderSecLoading(secTabState.symbolsInput || "SEC");
     loadSecBrief({
@@ -4252,7 +4315,8 @@ function renderSecView() {
   }
 
   workspaceTableWrap.querySelectorAll("[data-sec-readable-idx]").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
       const idx = Number(btn.getAttribute("data-sec-readable-idx"));
       const row = visibleRows[idx];
       if (!row) return;
@@ -4291,6 +4355,72 @@ function renderSecView() {
         });
     });
   });
+
+  workspaceTableWrap.querySelectorAll("[data-sec-row-idx]").forEach((rowEl) => {
+    rowEl.addEventListener("click", () => {
+      const idx = Number(rowEl.getAttribute("data-sec-row-idx"));
+      const row = visibleRows[idx];
+      if (!row) return;
+      const rowId = String(row.rowId || `${row.symbol || "sec"}-${idx}`);
+      const nextExpanded = secTabState.expandedRowId === rowId ? "" : rowId;
+      secTabState = { ...secTabState, expandedRowId: nextExpanded };
+      if (nextExpanded && !secTabState.readableCache?.[rowId]) {
+        secTabState = { ...secTabState, readableLoadingRowId: rowId, readableError: "" };
+        renderSecView();
+        loadSecReadableSummary(row)
+          .then(() => {
+            secTabState = { ...secTabState, readableLoadingRowId: "" };
+            if (currentTab === SEC_TAB) renderSecView();
+          })
+          .catch((error) => {
+            secTabState = {
+              ...secTabState,
+              readableLoadingRowId: "",
+              readableError: error.message || "Failed to build readable SEC brief.",
+            };
+            if (currentTab === SEC_TAB) renderSecView();
+          });
+        return;
+      }
+      renderSecView();
+    });
+  });
+
+  if (!readable && !secTabState.readableLoadingRowId && visibleRows.length) {
+    const firstRow = visibleRows[0];
+    const firstRowId = String(firstRow.rowId || `${firstRow.symbol || "sec"}-0`);
+    secTabState = {
+      ...secTabState,
+      expandedRowId: firstRowId,
+      readableLoadingRowId: firstRowId,
+      readableError: "",
+    };
+    loadSecReadableSummary(firstRow)
+      .then((payload) => {
+        secTabState = {
+          ...secTabState,
+          readableLoadingRowId: "",
+          readable: {
+            rowId: firstRowId,
+            symbol: firstRow.symbol || "",
+            form: firstRow.form || "",
+            filingDate: firstRow.filingDate || "",
+            headline: String(payload?.headline || "Plain English Filing Brief"),
+            bullets: Array.isArray(payload?.bullets) ? payload.bullets : [],
+            sourceUrl: String(payload?.sourceUrl || firstRow.secUrl || ""),
+          },
+        };
+        if (currentTab === SEC_TAB) renderSecView();
+      })
+      .catch((error) => {
+        secTabState = {
+          ...secTabState,
+          readableLoadingRowId: "",
+          readableError: error.message || "Failed to build readable SEC brief.",
+        };
+        if (currentTab === SEC_TAB) renderSecView();
+      });
+  }
 }
 
 function renderShoppingView() {

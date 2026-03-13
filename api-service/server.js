@@ -112,6 +112,11 @@ const FALLBACK_TICKER_UNIVERSE = [
   "XLY",
   "XLV",
 ];
+const SEC_UNIVERSE_PRIORITY_SYMBOLS = [
+  "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH",
+  "LLY", "AVGO", "V", "MA", "COST", "WMT", "HD", "PG", "JNJ", "BAC",
+];
+const SEC_UNIVERSE_DEFENSE_SYMBOLS = ["LMT", "NOC", "RTX", "GD", "LHX", "HII", "KTOS", "LDOS", "AVAV", "TXT"];
 const SYMBOL_COMPANY_LOOKUP = {
   AAPL: "Apple Inc.",
   MSFT: "Microsoft",
@@ -3014,8 +3019,15 @@ app.get(["/market/sec-grid", "/api/market/sec-grid"], async (req, res) => {
       .map((s) => normalizeTickerSymbol(s))
       .filter(Boolean)
       .sort();
+    const priority = SEC_UNIVERSE_PRIORITY_SYMBOLS.filter((sym) => allSymbols.includes(sym));
+    const defense = SEC_UNIVERSE_DEFENSE_SYMBOLS.filter((sym) => allSymbols.includes(sym));
+    const pinnedSet = new Set([...priority, ...defense]);
+    const rest = allSymbols.filter((sym) => !pinnedSet.has(sym));
+    const rotation = rest.length ? (Math.floor(Date.now() / (24 * 60 * 60 * 1000)) % rest.length) : 0;
+    const rotated = rest.slice(rotation).concat(rest.slice(0, rotation));
+    const mixed = [...priority, ...defense, ...rotated];
     totalUniverse = allSymbols.length;
-    symbols = allSymbols.slice(offset, offset + limit);
+    symbols = mixed.slice(offset, offset + limit);
   }
   if (!symbols.length) {
     sendJson(res, 200, {
