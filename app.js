@@ -2381,21 +2381,6 @@ function renderTickerIntelView() {
     `;
     })
     .join("");
-  const watchboards = Array.isArray(tickerIntelState.watchboards) ? tickerIntelState.watchboards : [];
-  const watchboardButtonsHtml = watchboards
-    .slice(0, 6)
-    .map((layout) => {
-      const isActive = layout.id === tickerIntelState.selectedWatchboardId;
-      return `
-        <button type="button" class="watchboard-chip ${isActive ? "active" : ""}" data-watchboard-id="${escapeHtml(layout.id)}" title="${escapeHtml(
-          layout.description || layout.name
-        )}">
-          ${escapeHtml(layout.name)}
-        </button>
-      `;
-    })
-    .join("");
-
   const selectedQuote = tickerIntelState.quoteBySymbol[selected];
   const selectedCompany = getCompanyName(selected, selectedQuote);
   const selectedCompanyType = getCompanyTypeLabel(selected, selectedQuote, tickerIntelState.reportCache[selected] || null);
@@ -2639,25 +2624,6 @@ function renderTickerIntelView() {
   workspaceTableWrap.innerHTML = `
     <section class="ticker-intel-layout">
       <aside class="ticker-intel-list">
-        <div class="watchboard-strip">
-          <div class="watchboard-strip-top">
-            <button type="button" class="watchboard-refresh-btn" id="refreshTickerWatchboardsBtn">Regenerate</button>
-          </div>
-          <div class="watchboard-chip-row">
-            ${
-              tickerIntelState.watchboardsLoading
-                ? '<span class="settings-desc">Building Gradient watchboards...</span>'
-                : watchboardButtonsHtml || '<span class="settings-desc">No watchboards loaded yet.</span>'
-            }
-          </div>
-          ${
-            tickerIntelState.watchboardsError
-              ? `<div class="settings-desc">${escapeHtml(tickerIntelState.watchboardsError)}</div>`
-              : `<div class="settings-desc">Source: ${escapeHtml(
-                  tickerIntelState.watchboardsSource || "fallback"
-                )}</div>`
-          }
-        </div>
         <div class="ticker-filters">
           <select id="tickerUniversePreset" class="trade-input">
             <option value="sp500" ${tickerIntelState.universePreset === "sp500" ? "selected" : ""}>S&P 500 Universe</option>
@@ -2769,18 +2735,6 @@ function wireTickerIntelEvents() {
       renderTickerIntelView();
     });
   });
-  const watchboardRefreshBtn = document.getElementById("refreshTickerWatchboardsBtn");
-  if (watchboardRefreshBtn) {
-    watchboardRefreshBtn.addEventListener("click", () => {
-      loadTickerWatchboards({ force: true })
-        .then(() => {
-          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
-        })
-        .catch(() => {
-          if (currentTab === TICKER_INTEL_TAB) renderTickerIntelView();
-        });
-    });
-  }
   workspaceTableWrap.querySelectorAll("[data-watchboard-id]").forEach((btn) => {
     btn.addEventListener("click", () => {
       const layoutId = btn.dataset.watchboardId || "";
