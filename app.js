@@ -149,17 +149,19 @@ let secTabState = {
   cacheAt: {},
 };
 let timeTabState = {
-  query: "",
-  loadingSuggestions: false,
-  suggestions: [],
-  selectedLocation: null,
-  clockTimer: null,
-  searchDebounceTimer: null,
+  selectedZoneKey: "local",
 };
 const SEC_QUICK_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "EXE", "ADM"];
 const DEFAULT_TICKER_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH"];
 const SHOPPING_10_TO_50_SYMBOLS = ["F", "PFE", "BAC", "INTC", "T", "VZ", "KHC", "CCL", "SNAP", "PARA"];
 const DEFAULT_USER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York";
+const TIME_ZONE_PRESETS = [
+  { key: "et", label: "ET", timeZone: "America/New_York" },
+  { key: "ct", label: "CT", timeZone: "America/Chicago" },
+  { key: "mt", label: "MT", timeZone: "America/Denver" },
+  { key: "pt", label: "PT", timeZone: "America/Los_Angeles" },
+  { key: "local", label: "Local", timeZone: DEFAULT_USER_TIMEZONE },
+];
 const SYMBOL_COMPANY_NAMES = {
   AAPL: "Apple",
   MSFT: "Microsoft",
@@ -1372,33 +1374,22 @@ function formatEtNowLabel() {
   return formatter.format(new Date());
 }
 
-function getSavedMarketLocation() {
+function getSavedTimeZoneKey() {
   const prefs = readUiPrefs();
-  const saved = prefs?.marketLocation;
-  if (!saved || typeof saved !== "object") return null;
-  const label = String(saved.label || "").trim();
-  const timeZone = String(saved.timeZone || "").trim();
-  if (!label || !timeZone) return null;
-  return {
-    id: String(saved.id || `${label}|${timeZone}`).trim(),
-    label,
-    timeZone,
-    latitude: Number(saved.latitude || 0),
-    longitude: Number(saved.longitude || 0),
-  };
+  const value = String(prefs?.marketTimeZoneKey || "").trim().toLowerCase();
+  return TIME_ZONE_PRESETS.some((preset) => preset.key === value) ? value : "local";
 }
 
-function saveMarketLocation(location) {
-  if (!location || typeof location !== "object") return;
-  writeUiPrefs({
-    marketLocation: {
-      id: String(location.id || "").trim(),
-      label: String(location.label || "").trim(),
-      timeZone: String(location.timeZone || "").trim(),
-      latitude: Number(location.latitude || 0),
-      longitude: Number(location.longitude || 0),
-    },
-  });
+function saveTimeZoneKey(key) {
+  const safeKey = String(key || "").trim().toLowerCase();
+  if (!TIME_ZONE_PRESETS.some((preset) => preset.key === safeKey)) return;
+  writeUiPrefs({ marketTimeZoneKey: safeKey });
+}
+
+function resolveTimeZoneByKey(key) {
+  const safeKey = String(key || "").trim().toLowerCase();
+  const preset = TIME_ZONE_PRESETS.find((item) => item.key === safeKey);
+  return preset?.timeZone || DEFAULT_USER_TIMEZONE;
 }
 
 function formatNowInTimeZone(timeZone) {
@@ -1416,11 +1407,73 @@ function formatNowInTimeZone(timeZone) {
   return formatter.format(new Date());
 }
 
-async function loadTimePlaceSuggestions(query) {
-  const q = String(query || "").trim();
-  if (q.length < 2) return [];
-  const payload = await schwabApi(`/api/time/places?q=${encodeURIComponent(q)}`, { method: "GET" });
-  return Array.isArray(payload?.places) ? payload.places : [];
+function formatEtSessionTimeInZone(hour, minute, timeZone) {
+  const nowEt = getEtNowParts();
+  const synthetic = new Date(Date.UTC(nowEt.year, nowEt.month - 1, nowEt.day, hour, minute, 0));
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: String(timeZone || DEFAULT_USER_TIMEZONE),
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  });
+  return formatter.format(synthetic);
+}
+
+function getMarketSessionContext() {
+  const nowEt = getEtNowParts();
+  const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const day = weekdayMap[nowEt.weekday] ?? 0;
+  const minutes = nowEt.hour * 60 + nowEt.minute;
+  const weekend = day === 0 || day === 6;
+  if (weekend) {
+    return {
+      key: "weekend",
+      label: "Weekend",
+      guidance: "US equities are closed on weekends. Use this window to review your watchlist.",
+      progress: 0,
+    };
+  }
+  if (minutes < 4 * 60) {
+    return {
+      key: "overnight",
+      label: "Overnight",
+      guidance: "Market is closed. Pre-market starts at 4:00 AM ET.",
+      progress: 0,
+    };
+  }
+  if (minutes < 9 * 60 + 30) {
+    const progress = ((minutes - 4 * 60) / (5.5 * 60)) * 100;
+    return {
+      key: "pre",
+      label: "Pre-market",
+      guidance: "Pre-market session is live. Liquidity can be thinner and spreads wider.",
+      progress: Math.max(0, Math.min(100, progress)),
+    };
+  }
+  if (minutes < 16 * 60) {
+    const progress = ((minutes - (9 * 60 + 30)) / (6.5 * 60)) * 100;
+    return {
+      key: "regular",
+      label: "Regular session",
+      guidance: "Regular market session is open. This is typically the deepest liquidity window.",
+      progress: Math.max(0, Math.min(100, progress)),
+    };
+  }
+  if (minutes < 20 * 60) {
+    const progress = ((minutes - 16 * 60) / (4 * 60)) * 100;
+    return {
+      key: "after",
+      label: "After-hours",
+      guidance: "After-hours is active. Price moves can be faster with lighter volume.",
+      progress: Math.max(0, Math.min(100, progress)),
+    };
+  }
+  return {
+    key: "overnight",
+    label: "Overnight",
+    guidance: "Market is closed. Next pre-market session starts at 4:00 AM ET.",
+    progress: 100,
+  };
 }
 
 function startTimeTabClock() {
@@ -1429,19 +1482,50 @@ function startTimeTabClock() {
   const countdownEl = document.getElementById("marketOpenCountdown");
   const etNowEl = document.getElementById("timeEtNow");
   const localNowEl = document.getElementById("timeLocalNow");
+  const sessionNameEl = document.getElementById("timeSessionName");
+  const sessionFillEl = document.getElementById("timeSessionProgress");
+  const sessionHelpEl = document.getElementById("timeSessionHelp");
+  const preLabelEl = document.getElementById("timePreLabel");
+  const regLabelEl = document.getElementById("timeRegLabel");
+  const closeLabelEl = document.getElementById("timeCloseLabel");
+  const preScheduleEl = document.getElementById("timePreScheduleLabel");
+  const regScheduleEl = document.getElementById("timeRegScheduleLabel");
+  const closeScheduleEl = document.getElementById("timeCloseScheduleLabel");
+  const afterScheduleEl = document.getElementById("timeAfterCloseLabel");
+  const actionHintEl = document.getElementById("timeActionHint");
   if (!statusEl || !countdownEl || !etNowEl || !localNowEl) return;
 
   const update = () => {
     const marketOpen = isUsMarketOpenNow();
     const countdown = marketOpen ? computeNextMarketCloseCountdown() : computeNextMarketOpenCountdown();
+    const session = getMarketSessionContext();
+    const zoneKey = timeTabState.selectedZoneKey || "local";
+    const zoneName = resolveTimeZoneByKey(zoneKey);
+    const zoneLabel = TIME_ZONE_PRESETS.find((preset) => preset.key === zoneKey)?.label || "Local";
     statusEl.textContent = marketOpen ? "US Market Open" : "US Market Closed";
     statusEl.className = `market-state-pill ${marketOpen ? "open" : "closed"}`;
     countdownEl.textContent = marketOpen ? `Closes in ${formatCountdown(countdown)}` : `Opens in ${formatCountdown(countdown)}`;
     etNowEl.textContent = `ET now: ${formatEtNowLabel()}`;
-    const selected = timeTabState.selectedLocation;
-    const locationLabel = selected?.label ? selected.label : "Your local timezone";
-    const localZone = selected?.timeZone || DEFAULT_USER_TIMEZONE;
-    localNowEl.textContent = `${locationLabel} (${localZone}) now: ${formatNowInTimeZone(localZone)}`;
+    localNowEl.textContent = `${zoneLabel} (${zoneName}) now: ${formatNowInTimeZone(zoneName)}`;
+    if (sessionNameEl) sessionNameEl.textContent = session.label;
+    if (sessionHelpEl) sessionHelpEl.textContent = session.guidance;
+    if (sessionFillEl) sessionFillEl.style.width = `${Math.round(Number(session.progress || 0))}%`;
+    const preTime = formatEtSessionTimeInZone(4, 0, zoneName);
+    const regTime = formatEtSessionTimeInZone(9, 30, zoneName);
+    const closeTime = formatEtSessionTimeInZone(16, 0, zoneName);
+    const afterTime = formatEtSessionTimeInZone(20, 0, zoneName);
+    if (preLabelEl) preLabelEl.textContent = preTime;
+    if (regLabelEl) regLabelEl.textContent = regTime;
+    if (closeLabelEl) closeLabelEl.textContent = closeTime;
+    if (preScheduleEl) preScheduleEl.textContent = preTime;
+    if (regScheduleEl) regScheduleEl.textContent = regTime;
+    if (closeScheduleEl) closeScheduleEl.textContent = closeTime;
+    if (afterScheduleEl) afterScheduleEl.textContent = afterTime;
+    if (actionHintEl) {
+      actionHintEl.textContent = marketOpen
+        ? "Market is open: buy and sell actions can be submitted now."
+        : "Market is closed: queue plans, review watchlist, and prepare entries for the next open.";
+    }
     applyMarketOpenTheme();
   };
 
@@ -5103,7 +5187,7 @@ function activateTab(tabName) {
           : tabName === TICKER_INTEL_TAB
             ? "Market coverage list + inline ticker workspace"
         : tabName === TIME_TAB
-          ? "Market open countdown + AI playbook"
+          ? "Market clock, sessions, and schedule"
       : tabName === SEC_TAB
         ? "SEC filings + Gradient AI digest"
       : tabName === SHOPPING_TAB
@@ -5227,28 +5311,25 @@ function activateTab(tabName) {
     return;
   }
   if (tabName === TIME_TAB) {
-    const savedLocation = getSavedMarketLocation();
+    const savedZoneKey = getSavedTimeZoneKey();
     timeTabState = {
       ...timeTabState,
-      selectedLocation: savedLocation || timeTabState.selectedLocation || null,
-      query: savedLocation?.label || "",
-      suggestions: [],
-      loadingSuggestions: false,
-      searchDebounceTimer: null,
+      selectedZoneKey: savedZoneKey || timeTabState.selectedZoneKey || "local",
     };
+    const zoneButtons = TIME_ZONE_PRESETS.map((preset) => {
+      const active = preset.key === timeTabState.selectedZoneKey;
+      return `<button type="button" class="time-zone-pill ${active ? "active" : ""}" data-time-zone-key="${preset.key}">${preset.label}</button>`;
+    }).join("");
     workspaceTableWrap.innerHTML = `
       <div class="agent-view">
         <section class="agent-hero">
           <h3>Market Time Center</h3>
-          <p>Search your location to view market timing in your timezone.</p>
+          <p>Clean market timing dashboard with quick timezone toggles.</p>
         </section>
-        <section class="schwab-card time-location-card">
-          <label class="trade-label" for="timeLocationInput">Your location</label>
-          <input id="timeLocationInput" class="trade-input" type="text" placeholder="Search city or state (ex: Fort Myers, FL)" autocomplete="off" value="${escapeHtml(
-            timeTabState.query || ""
-          )}" />
-          <div id="timeLocationSuggestions" class="time-location-suggestions" hidden></div>
-          <p class="settings-desc">Pick a location to set timezone context. Market open status updates live.</p>
+        <section class="schwab-card">
+          <h4>Timezone view</h4>
+          <div class="time-zone-strip">${zoneButtons}</div>
+          <p class="settings-desc">Switch displayed session times instantly without typing.</p>
         </section>
         <section class="schwab-metrics">
           <article class="schwab-metric-card">
@@ -5268,66 +5349,57 @@ function activateTab(tabName) {
           <h4>Your timezone clock</h4>
           <p class="schwab-card-sub" id="timeLocalNow">Loading timezone clock...</p>
         </section>
+        <section class="schwab-card">
+          <h4>Trading session timeline</h4>
+          <div class="time-session-head">
+            <strong id="timeSessionName">--</strong>
+            <span id="timeSessionHelp">--</span>
+          </div>
+          <div class="time-session-track">
+            <div class="time-session-progress" id="timeSessionProgress" style="width: 0%;"></div>
+          </div>
+          <div class="time-session-labels">
+            <span>Pre-market <em id="timePreLabel">--</em></span>
+            <span>Regular <em id="timeRegLabel">--</em></span>
+            <span>Close <em id="timeCloseLabel">--</em></span>
+          </div>
+        </section>
+        <section class="schwab-card">
+          <h4>Today's market schedule</h4>
+          <table class="time-schedule-table">
+            <thead>
+              <tr>
+                <th>Event</th>
+                <th>ET</th>
+                <th>Selected zone</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>Pre-market starts</td><td>4:00 AM</td><td id="timePreScheduleLabel">--</td></tr>
+              <tr><td>Regular session opens</td><td>9:30 AM</td><td id="timeRegScheduleLabel">--</td></tr>
+              <tr><td>Regular session closes</td><td>4:00 PM</td><td id="timeCloseScheduleLabel">--</td></tr>
+              <tr><td>After-hours closes</td><td>8:00 PM</td><td id="timeAfterCloseLabel">--</td></tr>
+            </tbody>
+          </table>
+        </section>
+        <section class="schwab-card">
+          <h4>What this means for you</h4>
+          <p class="schwab-card-sub" id="timeActionHint">Loading guidance...</p>
+        </section>
       </div>
     `;
     startTimeTabClock();
-    const locationInput = document.getElementById("timeLocationInput");
-    const suggestionsWrap = document.getElementById("timeLocationSuggestions");
-    const renderSuggestions = (places = []) => {
-      if (!suggestionsWrap) return;
-      if (!Array.isArray(places) || !places.length) {
-        suggestionsWrap.hidden = true;
-        suggestionsWrap.innerHTML = "";
-        return;
-      }
-      suggestionsWrap.hidden = false;
-      suggestionsWrap.innerHTML = places
-        .map(
-          (place, index) => `
-          <button type="button" class="time-suggestion-btn" data-time-suggestion-idx="${index}">
-            <strong>${escapeHtml(place.label || place.name || "Unknown location")}</strong>
-            <span>${escapeHtml(place.timeZone || "")}</span>
-          </button>
-        `
-        )
-        .join("");
-      suggestionsWrap.querySelectorAll("[data-time-suggestion-idx]").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const idx = Number(btn.getAttribute("data-time-suggestion-idx"));
-          const selected = places[idx];
-          if (!selected) return;
-          timeTabState = {
-            ...timeTabState,
-            selectedLocation: selected,
-            query: String(selected.label || selected.name || "").trim(),
-            suggestions: [],
-          };
-          saveMarketLocation(selected);
-          if (locationInput) locationInput.value = timeTabState.query;
-          renderSuggestions([]);
-          startTimeTabClock();
+    document.querySelectorAll("[data-time-zone-key]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const key = String(btn.getAttribute("data-time-zone-key") || "").toLowerCase();
+        if (!TIME_ZONE_PRESETS.some((preset) => preset.key === key)) return;
+        timeTabState = { ...timeTabState, selectedZoneKey: key };
+        saveTimeZoneKey(key);
+        document.querySelectorAll("[data-time-zone-key]").forEach((pill) => {
+          pill.classList.toggle("active", String(pill.getAttribute("data-time-zone-key") || "").toLowerCase() === key);
         });
+        startTimeTabClock();
       });
-    };
-    locationInput?.addEventListener("input", () => {
-      const nextQuery = String(locationInput.value || "").trim();
-      timeTabState = { ...timeTabState, query: nextQuery };
-      if (timeTabState.searchDebounceTimer) clearTimeout(timeTabState.searchDebounceTimer);
-      if (nextQuery.length < 2) {
-        renderSuggestions([]);
-        return;
-      }
-      timeTabState.searchDebounceTimer = setTimeout(() => {
-        loadTimePlaceSuggestions(nextQuery)
-          .then((places) => {
-            if (currentTab !== TIME_TAB) return;
-            timeTabState = { ...timeTabState, suggestions: places };
-            renderSuggestions(places);
-          })
-          .catch(() => {
-            renderSuggestions([]);
-          });
-      }, 220);
     });
     return;
   }
