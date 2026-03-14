@@ -21,6 +21,8 @@ const MAX_ORDER_QTY = Number(process.env.SCHWAB_MAX_ORDER_QTY || 1000);
 const TICKER_UNIVERSE_TTL_MS = Number(process.env.TICKER_UNIVERSE_TTL_MS || 12 * 60 * 60 * 1000);
 const MARKET_OVERVIEW_TTL_MS = Number(process.env.MARKET_OVERVIEW_TTL_MS || 20 * 1000);
 const OPENING_PLAYBOOK_TTL_MS = Number(process.env.OPENING_PLAYBOOK_TTL_MS || 90 * 1000);
+const OPENING_PLAYBOOK_WORKER_INTERVAL_MS = Number(process.env.OPENING_PLAYBOOK_WORKER_INTERVAL_MS || 30 * 1000);
+const OPENING_PLAYBOOK_SLOT_TTL_MS = Number(process.env.OPENING_PLAYBOOK_SLOT_TTL_MS || 3 * 60 * 60 * 1000);
 const TICKER_REPORT_TTL_MS = Number(process.env.TICKER_REPORT_TTL_MS || 5 * 60 * 1000);
 const TICKER_REPORT_CACHE_SCOPE = "ticker-report-v6";
 const SEC_BRIEF_TTL_MS = Number(process.env.SEC_BRIEF_TTL_MS || 15 * 60 * 1000);
@@ -43,6 +45,11 @@ const secCompanyMetaCache = { bySymbol: {}, fetchedAt: 0 };
 const secSubmissionsCache = new Map();
 const marketOverviewCache = { data: null, fetchedAt: 0 };
 const openingPlaybookCache = { data: null, fetchedAt: 0 };
+const openingPlaybookWorkerState = {
+  running: false,
+  lastSlotId: "",
+  lastRunAt: 0,
+};
 const tickerWatchboardsCache = { data: null, fetchedAt: 0 };
 const tickerReportCache = new Map();
 const tickerReportInFlight = new Map();
@@ -2758,7 +2765,118 @@ Rules:
   }
 });
 
-async function buildOpeningPlaybook() {
+function getEtNowParts() {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour12: false,
+    weekday: "short",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = Object.fromEntries(formatter.formatToParts(new Date()).map((p) => [p.type, p.value]));
+  return {
+    weekday: String(parts.weekday || "Mon"),
+    year: Number(parts.year || 1970),
+    month: Number(parts.month || 1),
+    day: Number(parts.day || 1),
+    hour: Number(parts.hour || 0),
+    minute: Number(parts.minute || 0),
+    second: Number(parts.second || 0),
+  };
+}
+
+function computeNextMarketOpenEt() {
+  const nowEt = getEtNowParts();
+  const weekdayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const nowDow = weekdayMap[nowEt.weekday] ?? 1;
+  const openMinutes = 9 * 60 + 30;
+  const nowMinutes = nowEt.hour * 60 + nowEt.minute;
+  let addDays = 0;
+  if (nowDow === 0) addDays = 1;
+  else if (nowDow === 6) addDays = 2;
+  else if (nowMinutes >= openMinutes) addDays = nowDow === 5 ? 3 : 1;
+  return {
+    year: nowEt.year,
+    month: nowEt.month,
+    day: nowEt.day + addDays,
+    hour: 9,
+    minute: 30,
+    second: 0,
+  };
+}
+
+function getOpeningWorkerSlot() {
+  const nowEt = getEtNowParts();
+  const openEt = computeNextMarketOpenEt();
+  const nowSynthetic = Date.UTC(nowEt.year, nowEt.month - 1, nowEt.day, nowEt.hour, nowEt.minute, nowEt.second);
+  const openSynthetic = Date.UTC(openEt.year, openEt.month - 1, openEt.day, openEt.hour, openEt.minute, openEt.second);
+  const msUntilOpen = Math.max(0, openSynthetic - nowSynthetic);
+  const minuteUntilOpen = Math.floor(msUntilOpen / 60000);
+  const thresholds = [60, 15, 5, 1];
+  const active = thresholds.find((t) => minuteUntilOpen <= t && minuteUntilOpen >= Math.max(0, t - 1));
+  const dayStamp = `${openEt.year}-${String(openEt.month).padStart(2, "0")}-${String(openEt.day).padStart(2, "0")}`;
+  const openAt = `${dayStamp} 09:30 ET`;
+  return {
+    minuteUntilOpen,
+    triggerMinute: active || null,
+    openAt,
+    slotId: active ? `${dayStamp}:t-${active}` : "",
+  };
+}
+
+function roundPrice(value) {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n * 100) / 100;
+}
+
+function fallbackTradePlanFromQuote(quote) {
+  const last = roundPrice(quote?.close);
+  const open = roundPrice(quote?.open);
+  const basis = last || open || 10;
+  const stop = roundPrice(basis * 0.985);
+  const target = roundPrice(basis * 1.02);
+  const buyPrice = roundPrice(basis * 0.998);
+  return {
+    side: "BUY",
+    orderType: "LIMIT",
+    buy: `BUY LIMIT @ ${buyPrice != null ? buyPrice.toFixed(2) : "-"}`,
+    sell: `TAKE PROFIT @ ${target != null ? target.toFixed(2) : "-"}`,
+    stop: `STOP @ ${stop != null ? stop.toFixed(2) : "-"}`,
+    tif: "DAY",
+  };
+}
+
+function buildOpeningPlaybookFallback({ triggerMinute, marketSnapshot }) {
+  const ranked = [...marketSnapshot]
+    .filter((q) => Number.isFinite(Number(q?.close)) || Number.isFinite(Number(q?.open)))
+    .sort((a, b) => Math.abs(Number(b?.changePercent || 0)) - Math.abs(Number(a?.changePercent || 0)))
+    .slice(0, 3);
+  const picks = ranked.length ? ranked : [
+    { symbol: "SPY", label: "SPY", close: 0, open: 0, changePercent: 0 },
+    { symbol: "QQQ", label: "QQQ", close: 0, open: 0, changePercent: 0 },
+    { symbol: "IWM", label: "IWM", close: 0, open: 0, changePercent: 0 },
+  ];
+  return {
+    asOf: new Date().toISOString(),
+    source: "fallback",
+    trigger: triggerMinute ? `T-${triggerMinute}` : "on-demand",
+    summary: "Opening playbook generated from live market movers and liquidity proxies.",
+    playbook: picks.map((quote) => ({
+      symbol: normalizeTickerSymbol(quote?.symbol || quote?.label || ""),
+      companyName: String(quote?.label || quote?.companyName || quote?.symbol || "").trim(),
+      whyNow: "High-liquidity name with measurable pre-open momentum and clear risk levels.",
+      plan: fallbackTradePlanFromQuote(quote),
+    })),
+    marketSnapshot,
+  };
+}
+
+async function buildOpeningPlaybook({ triggerMinute = null } = {}) {
   const symbols = [
     { symbol: "spy.us", label: "S&P 500 ETF (SPY)" },
     { symbol: "qqq.us", label: "Nasdaq 100 ETF (QQQ)" },
@@ -2766,133 +2884,142 @@ async function buildOpeningPlaybook() {
     { symbol: "dia.us", label: "Dow ETF (DIA)" },
     { symbol: "gld.us", label: "Gold ETF (GLD)" },
     { symbol: "tlt.us", label: "20Y Treasury ETF (TLT)" },
+    { symbol: "xlf.us", label: "Financials ETF (XLF)" },
+    { symbol: "xlk.us", label: "Technology ETF (XLK)" },
+    { symbol: "xle.us", label: "Energy ETF (XLE)" },
+    { symbol: "aapl.us", label: "Apple (AAPL)" },
+    { symbol: "msft.us", label: "Microsoft (MSFT)" },
+    { symbol: "nvda.us", label: "NVIDIA (NVDA)" },
   ];
-
   const marketSnapshot = (
-    await Promise.all(
-      symbols.map(({ symbol, label }) => fetchStooqQuote(symbol, label).catch(() => null))
-    )
+    await Promise.all(symbols.map(({ symbol, label }) => fetchStooqQuote(symbol, label).catch(() => null)))
   ).filter(Boolean);
 
   const endpoint = process.env.GRADIENT_AGENT_ENDPOINT;
   const key = process.env.GRADIENT_AGENT_KEY;
   if (!endpoint || !key) {
-    return {
-      asOf: new Date().toISOString(),
-      source: "fallback",
-      buckets: [
-        {
-          name: "Large Cap Momentum",
-          thesis: "Use high-liquidity ETFs as opening bell anchors.",
-          tickers: ["SPY", "QQQ", "DIA"],
-        },
-        {
-          name: "Risk Rotation",
-          thesis: "Small caps and duration can signal risk-on/risk-off at open.",
-          tickers: ["IWM", "TLT", "GLD"],
-        },
-      ],
-      agentBriefs: {
-        macro: ["Macro Agent: Watch index direction and bond yield moves into the opening hour."],
-        sector: ["Sector Agent: Track where leadership appears after the first 15 minutes."],
-        opening: ["Opening Agent: Focus on liquid names with clean opening-range behavior."],
-      },
-      marketSnapshot,
-    };
+    return buildOpeningPlaybookFallback({ triggerMinute, marketSnapshot });
   }
 
   const base = endpoint.replace(/\/+$/, "");
   const completionsUrl = base.includes("/v1") ? `${base}/chat/completions` : `${base}/v1/chat/completions`;
+  const model = process.env.GRADIENT_MODEL || "openai-gpt-oss-120b";
+  const aiRaw = await gradientStructuredJson({
+    completionsUrl,
+    key,
+    model,
+    systemPrompt:
+      "You are an opening bell execution strategist. Return strict JSON only, no markdown.",
+    userPrompt: `
+Market snapshot JSON:
+${JSON.stringify(marketSnapshot, null, 2)}
 
-  const prompt = `
-You are an opening bell trading assistant.
-Given this market snapshot JSON:
-${JSON.stringify(marketSnapshot)}
+Current trigger window: ${triggerMinute ? `T-${triggerMinute}` : "on-demand"}.
 
-Return STRICT JSON only with this shape:
+Return STRICT JSON:
 {
-  "buckets": [
-    { "name": "string", "thesis": "string", "tickers": ["AAPL","MSFT","..."] }
-  ],
-  "notes": "string",
-  "agentBriefs": {
-    "macro": ["string","string"],
-    "sector": ["string","string"],
-    "opening": ["string","string"]
-  }
+  "summary": "string",
+  "playbook": [
+    {
+      "symbol": "AAPL",
+      "companyName": "Apple Inc.",
+      "whyNow": "plain English reason",
+      "plan": {
+        "side": "BUY",
+        "orderType": "LIMIT",
+        "buy": "BUY LIMIT @ 123.45",
+        "sell": "TAKE PROFIT @ 126.00",
+        "stop": "STOP @ 121.80",
+        "tif": "DAY"
+      }
+    }
+  ]
 }
 
 Rules:
-- 3 to 4 buckets total
-- Each bucket must have 3-6 tickers
-- Focus on liquid U.S. tickers most relevant for opening session ideas
-- Keep thesis concise and practical
-`;
+- Exactly 3 playbook entries.
+- Use liquid U.S. tickers only.
+- whyNow must be <= 18 words.
+- plan strings must include a concrete price.
+- Keep output concise and execution-focused.
+`,
+  });
 
-  const upstream = await postJson(
-    completionsUrl,
-    {
-      model: process.env.GRADIENT_MODEL || "openai-gpt-oss-120b",
-      stream: false,
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a market strategist. Return clean JSON only, no markdown.",
+  const entries = Array.isArray(aiRaw?.playbook) ? aiRaw.playbook : [];
+  const normalized = entries
+    .map((entry) => {
+      const symbol = normalizeTickerSymbol(entry?.symbol || "");
+      if (!symbol) return null;
+      const plan = entry?.plan && typeof entry.plan === "object" ? entry.plan : {};
+      return {
+        symbol,
+        companyName: String(entry?.companyName || symbol).trim(),
+        whyNow: String(entry?.whyNow || "Opening setup with liquidity and directional confirmation.").trim(),
+        plan: {
+          side: String(plan.side || "BUY").toUpperCase(),
+          orderType: String(plan.orderType || "LIMIT").toUpperCase(),
+          buy: String(plan.buy || "").trim(),
+          sell: String(plan.sell || "").trim(),
+          stop: String(plan.stop || "").trim(),
+          tif: String(plan.tif || "DAY").toUpperCase(),
         },
-        { role: "user", content: prompt },
-      ],
-    },
-    {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${key}`,
-    }
-  );
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 3);
 
-  if (upstream.status < 200 || upstream.status >= 300) {
-    throw new Error(`Gradient returned ${upstream.status}`);
+  if (normalized.length !== 3) {
+    return buildOpeningPlaybookFallback({ triggerMinute, marketSnapshot });
   }
 
-  const content = String(upstream.data?.choices?.[0]?.message?.content || "").trim();
-  const jsonMatch = content.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error("Gradient response did not include valid JSON.");
-  }
-  const parsed = JSON.parse(jsonMatch[0]);
-  const buckets = Array.isArray(parsed?.buckets) ? parsed.buckets : [];
-  const parsedBriefs = parsed?.agentBriefs && typeof parsed.agentBriefs === "object" ? parsed.agentBriefs : {};
   return {
     asOf: new Date().toISOString(),
     source: "gradient",
-    buckets,
-    notes: parsed?.notes || "",
-    agentBriefs: {
-      macro: sanitizeArray(parsedBriefs?.macro, 3),
-      sector: sanitizeArray(parsedBriefs?.sector, 3),
-      opening: sanitizeArray(parsedBriefs?.opening, 3),
-    },
+    trigger: triggerMinute ? `T-${triggerMinute}` : "on-demand",
+    summary: String(aiRaw?.summary || "Pre-open playbook ready with three actionable setups.").trim(),
+    playbook: normalized,
     marketSnapshot,
   };
 }
 
-app.get(["/market/opening-playbook", "/api/market/opening-playbook"], async (_req, res) => {
-  const redisKey = buildRedisCacheKey("opening-playbook-v2");
-  const redisCached = await getRedisCacheJson(redisKey);
-  if (redisCached) {
-    sendJson(res, 200, redisCached);
-    return;
-  }
-  const cached = getFreshCache(openingPlaybookCache, OPENING_PLAYBOOK_TTL_MS);
-  if (cached) {
-    sendJson(res, 200, cached);
-    return;
+app.get(["/market/opening-playbook", "/api/market/opening-playbook"], async (req, res) => {
+  const force = /^(1|true|yes)$/i.test(String(req.query.force || "").trim());
+  const latestSlotKey = buildRedisCacheKey("opening-playbook-v3", "latest-slot");
+  if (!force) {
+    const latestSlot = await getRedisCacheJson(latestSlotKey);
+    if (latestSlot?.slotId) {
+      const redisSlotKey = buildRedisCacheKey("opening-playbook-v3", latestSlot.slotId);
+      const redisCached = await getRedisCacheJson(redisSlotKey);
+      if (redisCached) {
+        sendJson(res, 200, { ...redisCached, cacheMode: "slot" });
+        return;
+      }
+    }
+    const redisKey = buildRedisCacheKey("opening-playbook-v3", "latest");
+    const redisCached = await getRedisCacheJson(redisKey);
+    if (redisCached) {
+      sendJson(res, 200, { ...redisCached, cacheMode: "latest" });
+      return;
+    }
+    const cached = getFreshCache(openingPlaybookCache, OPENING_PLAYBOOK_TTL_MS);
+    if (cached) {
+      sendJson(res, 200, { ...cached, cacheMode: "memory" });
+      return;
+    }
   }
   try {
-    const playbook = await buildOpeningPlaybook();
+    const slot = getOpeningWorkerSlot();
+    const playbook = await buildOpeningPlaybook({ triggerMinute: slot.triggerMinute });
     openingPlaybookCache.data = playbook;
     openingPlaybookCache.fetchedAt = Date.now();
-    await setRedisCacheJson(redisKey, playbook, OPENING_PLAYBOOK_TTL_MS);
-    sendJson(res, 200, playbook);
+    const latestKey = buildRedisCacheKey("opening-playbook-v3", "latest");
+    await setRedisCacheJson(latestKey, playbook, OPENING_PLAYBOOK_SLOT_TTL_MS);
+    if (slot.slotId) {
+      const slotKey = buildRedisCacheKey("opening-playbook-v3", slot.slotId);
+      await setRedisCacheJson(slotKey, { ...playbook, slotId: slot.slotId, openAt: slot.openAt }, OPENING_PLAYBOOK_SLOT_TTL_MS);
+      await setRedisCacheJson(latestSlotKey, { slotId: slot.slotId, openAt: slot.openAt }, OPENING_PLAYBOOK_SLOT_TTL_MS);
+    }
+    sendJson(res, 200, { ...playbook, slotId: slot.slotId || null, openAt: slot.openAt });
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to build opening playbook." });
   }
@@ -3910,12 +4037,39 @@ async function prewarmHotTickerReports() {
   }
 }
 
+async function precomputeOpeningPlaybookSlot() {
+  if (openingPlaybookWorkerState.running) return;
+  const slot = getOpeningWorkerSlot();
+  if (!slot.triggerMinute || !slot.slotId) return;
+  if (openingPlaybookWorkerState.lastSlotId === slot.slotId) return;
+  openingPlaybookWorkerState.running = true;
+  try {
+    const playbook = await buildOpeningPlaybook({ triggerMinute: slot.triggerMinute });
+    openingPlaybookCache.data = playbook;
+    openingPlaybookCache.fetchedAt = Date.now();
+    const latestKey = buildRedisCacheKey("opening-playbook-v3", "latest");
+    const latestSlotKey = buildRedisCacheKey("opening-playbook-v3", "latest-slot");
+    const slotKey = buildRedisCacheKey("opening-playbook-v3", slot.slotId);
+    await setRedisCacheJson(latestKey, playbook, OPENING_PLAYBOOK_SLOT_TTL_MS);
+    await setRedisCacheJson(slotKey, { ...playbook, slotId: slot.slotId, openAt: slot.openAt }, OPENING_PLAYBOOK_SLOT_TTL_MS);
+    await setRedisCacheJson(latestSlotKey, { slotId: slot.slotId, openAt: slot.openAt }, OPENING_PLAYBOOK_SLOT_TTL_MS);
+    openingPlaybookWorkerState.lastSlotId = slot.slotId;
+    openingPlaybookWorkerState.lastRunAt = Date.now();
+  } finally {
+    openingPlaybookWorkerState.running = false;
+  }
+}
+
 async function startServer() {
   initRedisCache();
   prewarmHotTickerReports().catch(() => ({}));
+  precomputeOpeningPlaybookSlot().catch(() => ({}));
   setInterval(() => {
     prewarmHotTickerReports().catch(() => ({}));
   }, TICKER_PREWARM_INTERVAL_MS);
+  setInterval(() => {
+    precomputeOpeningPlaybookSlot().catch(() => ({}));
+  }, OPENING_PLAYBOOK_WORKER_INTERVAL_MS);
   app.listen(PORT, () => {
     console.log(`API service listening on port ${PORT}`);
   });

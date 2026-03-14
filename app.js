@@ -123,7 +123,7 @@ let chatHistory = [];
 let schwabSession = { connected: false };
 let schwabData = { accounts: null, openOrders: null, accountError: "" };
 let investmentsMarket = { assets: [], updatedAt: null, beginnerBrief: null };
-let openingPlaybook = { buckets: [], asOf: null, agentBriefs: null };
+let openingPlaybook = { buckets: [], asOf: null, agentBriefs: null, playbook: [], summary: "", trigger: "" };
 let openingQuotesBySymbol = {};
 let secTabState = {
   symbolsInput: "ALL",
@@ -408,12 +408,24 @@ async function loadInvestmentsMarketData() {
 
 async function loadOpeningPlaybook() {
   const data = await schwabApi("/api/market/opening-playbook", { method: "GET" });
+  const entries = Array.isArray(data.playbook) ? data.playbook : [];
   openingPlaybook = {
     buckets: Array.isArray(data.buckets) ? data.buckets : [],
     asOf: data.asOf || null,
     notes: data.notes || "",
     source: data.source || "unknown",
     agentBriefs: data?.agentBriefs && typeof data.agentBriefs === "object" ? data.agentBriefs : null,
+    trigger: data.trigger || "",
+    summary: data.summary || "",
+    playbook: entries
+      .map((row) => ({
+        symbol: String(row?.symbol || "").toUpperCase(),
+        companyName: String(row?.companyName || row?.symbol || "").trim(),
+        whyNow: String(row?.whyNow || "").trim(),
+        plan: row?.plan && typeof row.plan === "object" ? row.plan : {},
+      }))
+      .filter((row) => row.symbol)
+      .slice(0, 3),
   };
   return openingPlaybook;
 }
@@ -1531,6 +1543,44 @@ function startTimeTabClock() {
 
   update();
   marketCountdownTimer = setInterval(update, 1000);
+}
+
+function renderTimePlaybookPanel() {
+  const wrap = document.getElementById("timePlaybookWrap");
+  if (!wrap) return;
+  const rows = Array.isArray(openingPlaybook.playbook) ? openingPlaybook.playbook.slice(0, 3) : [];
+  if (!rows.length) {
+    wrap.innerHTML = '<p class="schwab-card-sub">Playbook unavailable right now.</p>';
+    return;
+  }
+  const asOf = openingPlaybook.asOf ? new Date(openingPlaybook.asOf).toLocaleTimeString() : "-";
+  wrap.innerHTML = `
+    <div class="time-playbook-meta">
+      <span>Trigger: ${escapeHtml(openingPlaybook.trigger || "on-demand")}</span>
+      <span>Source: ${escapeHtml(openingPlaybook.source || "unknown")}</span>
+      <span>Updated: ${escapeHtml(asOf)}</span>
+    </div>
+    <p class="schwab-card-sub">${escapeHtml(openingPlaybook.summary || "3 precomputed opening setups ready to execute.")}</p>
+    <div class="time-playbook-grid">
+      ${rows
+        .map((row) => {
+          const plan = row?.plan && typeof row.plan === "object" ? row.plan : {};
+          return `
+            <article class="time-playbook-card">
+              <h5>${escapeHtml(row.symbol || "-")} - ${escapeHtml(row.companyName || row.symbol || "")}</h5>
+              <p>${escapeHtml(row.whyNow || "Opening setup based on liquidity and momentum.")}</p>
+              <ul>
+                <li>${escapeHtml(plan.buy || "BUY LIMIT @ -")}</li>
+                <li>${escapeHtml(plan.sell || "TAKE PROFIT @ -")}</li>
+                <li>${escapeHtml(plan.stop || "STOP @ -")}</li>
+                <li>${escapeHtml(`${String(plan.side || "BUY").toUpperCase()} ${String(plan.orderType || "LIMIT").toUpperCase()} • ${String(plan.tif || "DAY").toUpperCase()}`)}</li>
+              </ul>
+            </article>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
 }
 
 function stopShoppingMarketClock() {
@@ -5386,6 +5436,10 @@ function activateTab(tabName) {
           <h4>What this means for you</h4>
           <p class="schwab-card-sub" id="timeActionHint">Loading guidance...</p>
         </section>
+        <section class="schwab-card">
+          <h4>Countdown-triggered AI playbook</h4>
+          <div id="timePlaybookWrap"><p class="schwab-card-sub">Loading precomputed playbook...</p></div>
+        </section>
       </div>
     `;
     startTimeTabClock();
@@ -5401,6 +5455,29 @@ function activateTab(tabName) {
         startTimeTabClock();
       });
     });
+    const hasFreshPlaybook =
+      Array.isArray(openingPlaybook.playbook) &&
+      openingPlaybook.playbook.length === 3 &&
+      Date.now() - Number(openingPlaybookLoadedAt || 0) < 2 * 60 * 1000;
+    if (hasFreshPlaybook) {
+      renderTimePlaybookPanel();
+    } else {
+      loadOpeningPlaybook()
+        .then(() => {
+          openingPlaybookLoadedAt = Date.now();
+          if (currentTab !== TIME_TAB) return;
+          renderTimePlaybookPanel();
+        })
+        .catch((error) => {
+          if (currentTab !== TIME_TAB) return;
+          const wrap = document.getElementById("timePlaybookWrap");
+          if (wrap) {
+            wrap.innerHTML = `<p class="schwab-card-sub">${escapeHtml(
+              error?.message || "Playbook failed to load."
+            )}</p>`;
+          }
+        });
+    }
     return;
   }
   if (tabName === SEC_TAB) {

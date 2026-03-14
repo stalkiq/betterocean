@@ -2158,6 +2158,53 @@ max-width: 270px;
   color: #dbe8ff;
 }
 
+.time-playbook-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #9ab2da;
+  font-size: 11px;
+}
+
+.time-playbook-grid {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.time-playbook-card {
+  border: 1px solid #2b4366;
+  background: #0f1c32;
+  border-radius: 8px;
+  padding: 10px;
+}
+
+.time-playbook-card h5 {
+  margin: 0;
+  color: #e1edff;
+  font-size: 13px;
+}
+
+.time-playbook-card p {
+  margin: 7px 0 8px;
+  color: #a8bede;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.time-playbook-card ul {
+  margin: 0;
+  padding-left: 16px;
+  display: grid;
+  gap: 4px;
+}
+
+.time-playbook-card li {
+  color: #d3e3ff;
+  font-size: 11px;
+}
+
 .agent-hero {
   border: 1px solid var(--line);
   border-radius: 10px;
