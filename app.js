@@ -2639,10 +2639,8 @@ function renderTickerIntelView() {
   workspaceTableWrap.innerHTML = `
     <section class="ticker-intel-layout">
       <aside class="ticker-intel-list">
-        <h4>Market Coverage</h4>
         <div class="watchboard-strip">
           <div class="watchboard-strip-top">
-            <span class="watchboard-label">AI Watchboards</span>
             <button type="button" class="watchboard-refresh-btn" id="refreshTickerWatchboardsBtn">Regenerate</button>
           </div>
           <div class="watchboard-chip-row">
@@ -5245,7 +5243,7 @@ function activateTab(tabName) {
       : tabName === INVESTMENTS_TAB
         ? "Public market dashboard"
           : tabName === TICKER_INTEL_TAB
-            ? "Market coverage list + inline ticker workspace"
+            ? "Ticker list + inline ticker workspace"
         : tabName === TIME_TAB
           ? "Market clock, sessions, and schedule"
       : tabName === SEC_TAB
