@@ -114,7 +114,7 @@ const AGENTS = [
 const AGENT_BY_ID = Object.fromEntries(AGENTS.map((agent) => [agent.id, agent]));
 const AGENT_BY_TAB = Object.fromEntries(AGENTS.map((agent) => [agent.tab, agent]));
 
-const openTabs = new Set([HOME_TAB, PORTFOLIO_TAB, INVESTMENTS_TAB, TICKER_INTEL_TAB, TIME_TAB, SEC_TAB]);
+const openTabs = new Set([HOME_TAB, TICKER_INTEL_TAB, TIME_TAB]);
 let currentTab = HOME_TAB;
 let currentAgentId = AGENTS[0].id;
 const announcedAgents = new Set();
@@ -3886,11 +3886,8 @@ function setChatContextFromAgent(agent, announce = false) {
 function isPermanentTab(tabName) {
   return (
     tabName === HOME_TAB ||
-    tabName === PORTFOLIO_TAB ||
-    tabName === INVESTMENTS_TAB ||
     tabName === TICKER_INTEL_TAB ||
-    tabName === TIME_TAB ||
-    tabName === SEC_TAB
+    tabName === TIME_TAB
   );
 }
 
@@ -5748,11 +5745,8 @@ async function initApp() {
   }
 
   renderTabs(HOME_TAB);
-  openTabs.add(PORTFOLIO_TAB);
-  openTabs.add(INVESTMENTS_TAB);
   openTabs.add(TICKER_INTEL_TAB);
   openTabs.add(TIME_TAB);
-  openTabs.add(SEC_TAB);
   if (schwabSession.connected) {
     activateTab(HOME_TAB);
   } else {
@@ -5762,8 +5756,7 @@ async function initApp() {
 
   if (schwabFlag === "connected") {
     appendChatMessage("assistant", "Schwab login successful. Your account is connected.", "msg-muted");
-    openTabs.add(PORTFOLIO_TAB);
-    activateTab(PORTFOLIO_TAB);
+    activateTab(HOME_TAB);
   } else if (schwabFlag === "error") {
     appendChatMessage(
       "assistant",
