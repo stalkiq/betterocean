@@ -2205,6 +2205,25 @@ max-width: 270px;
   font-size: 11px;
 }
 
+.time-countdown-only {
+  margin-top: 14px;
+  border: 1px solid #31507a;
+  border-radius: 14px;
+  background: linear-gradient(180deg, #10213b 0%, #0d1a30 100%);
+  padding: 18px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.time-countdown-large {
+  font-size: clamp(44px, 9vw, 110px);
+  line-height: 1;
+  letter-spacing: 1px;
+  font-weight: 800;
+  color: #e7f0ff;
+}
+
 .agent-hero {
   border: 1px solid var(--line);
   border-radius: 10px;

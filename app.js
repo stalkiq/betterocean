@@ -1583,6 +1583,19 @@ function renderTimePlaybookPanel() {
   `;
 }
 
+function startMinimalTimeCountdown() {
+  stopMarketCountdown();
+  const el = document.getElementById("marketOpenCountdownHero");
+  if (!el) return;
+  const update = () => {
+    const countdown = computeNextMarketOpenCountdown();
+    el.textContent = formatCountdown(countdown);
+    applyMarketOpenTheme();
+  };
+  update();
+  marketCountdownTimer = setInterval(update, 1000);
+}
+
 function stopShoppingMarketClock() {
   if (shoppingMarketClockTimer) {
     clearInterval(shoppingMarketClockTimer);
@@ -5361,123 +5374,18 @@ function activateTab(tabName) {
     return;
   }
   if (tabName === TIME_TAB) {
-    const savedZoneKey = getSavedTimeZoneKey();
-    timeTabState = {
-      ...timeTabState,
-      selectedZoneKey: savedZoneKey || timeTabState.selectedZoneKey || "local",
-    };
-    const zoneButtons = TIME_ZONE_PRESETS.map((preset) => {
-      const active = preset.key === timeTabState.selectedZoneKey;
-      return `<button type="button" class="time-zone-pill ${active ? "active" : ""}" data-time-zone-key="${preset.key}">${preset.label}</button>`;
-    }).join("");
     workspaceTableWrap.innerHTML = `
       <div class="agent-view">
         <section class="agent-hero">
-          <h3>Market Time Center</h3>
-          <p>Clean market timing dashboard with quick timezone toggles.</p>
-        </section>
-        <section class="schwab-card">
-          <h4>Timezone view</h4>
-          <div class="time-zone-strip">${zoneButtons}</div>
-          <p class="settings-desc">Switch displayed session times instantly without typing.</p>
-        </section>
-        <section class="schwab-metrics">
-          <article class="schwab-metric-card">
-            <h4>Market status</h4>
-            <div class="schwab-metric-value small"><span id="timeMarketState" class="market-state-pill closed">--</span></div>
-          </article>
-          <article class="schwab-metric-card">
-            <h4>US market clock</h4>
-            <div class="schwab-metric-value small" id="marketOpenCountdown">--:--:--</div>
-          </article>
-          <article class="schwab-metric-card">
-            <h4>Reference</h4>
-            <div class="schwab-metric-value small" id="timeEtNow">ET now: --</div>
-          </article>
-        </section>
-        <section class="schwab-card">
-          <h4>Your timezone clock</h4>
-          <p class="schwab-card-sub" id="timeLocalNow">Loading timezone clock...</p>
-        </section>
-        <section class="schwab-card">
-          <h4>Trading session timeline</h4>
-          <div class="time-session-head">
-            <strong id="timeSessionName">--</strong>
-            <span id="timeSessionHelp">--</span>
+          <h3>Market Open Countdown</h3>
+          <p>Large countdown clock to the next U.S. market open (ET).</p>
+          <div class="time-countdown-only">
+            <div id="marketOpenCountdownHero" class="time-countdown-large">--:--:--</div>
           </div>
-          <div class="time-session-track">
-            <div class="time-session-progress" id="timeSessionProgress" style="width: 0%;"></div>
-          </div>
-          <div class="time-session-labels">
-            <span>Pre-market <em id="timePreLabel">--</em></span>
-            <span>Regular <em id="timeRegLabel">--</em></span>
-            <span>Close <em id="timeCloseLabel">--</em></span>
-          </div>
-        </section>
-        <section class="schwab-card">
-          <h4>Today's market schedule</h4>
-          <table class="time-schedule-table">
-            <thead>
-              <tr>
-                <th>Event</th>
-                <th>ET</th>
-                <th>Selected zone</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr><td>Pre-market starts</td><td>4:00 AM</td><td id="timePreScheduleLabel">--</td></tr>
-              <tr><td>Regular session opens</td><td>9:30 AM</td><td id="timeRegScheduleLabel">--</td></tr>
-              <tr><td>Regular session closes</td><td>4:00 PM</td><td id="timeCloseScheduleLabel">--</td></tr>
-              <tr><td>After-hours closes</td><td>8:00 PM</td><td id="timeAfterCloseLabel">--</td></tr>
-            </tbody>
-          </table>
-        </section>
-        <section class="schwab-card">
-          <h4>What this means for you</h4>
-          <p class="schwab-card-sub" id="timeActionHint">Loading guidance...</p>
-        </section>
-        <section class="schwab-card">
-          <h4>Countdown-triggered AI playbook</h4>
-          <div id="timePlaybookWrap"><p class="schwab-card-sub">Loading precomputed playbook...</p></div>
         </section>
       </div>
     `;
-    startTimeTabClock();
-    document.querySelectorAll("[data-time-zone-key]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const key = String(btn.getAttribute("data-time-zone-key") || "").toLowerCase();
-        if (!TIME_ZONE_PRESETS.some((preset) => preset.key === key)) return;
-        timeTabState = { ...timeTabState, selectedZoneKey: key };
-        saveTimeZoneKey(key);
-        document.querySelectorAll("[data-time-zone-key]").forEach((pill) => {
-          pill.classList.toggle("active", String(pill.getAttribute("data-time-zone-key") || "").toLowerCase() === key);
-        });
-        startTimeTabClock();
-      });
-    });
-    const hasFreshPlaybook =
-      Array.isArray(openingPlaybook.playbook) &&
-      openingPlaybook.playbook.length === 3 &&
-      Date.now() - Number(openingPlaybookLoadedAt || 0) < 2 * 60 * 1000;
-    if (hasFreshPlaybook) {
-      renderTimePlaybookPanel();
-    } else {
-      loadOpeningPlaybook()
-        .then(() => {
-          openingPlaybookLoadedAt = Date.now();
-          if (currentTab !== TIME_TAB) return;
-          renderTimePlaybookPanel();
-        })
-        .catch((error) => {
-          if (currentTab !== TIME_TAB) return;
-          const wrap = document.getElementById("timePlaybookWrap");
-          if (wrap) {
-            wrap.innerHTML = `<p class="schwab-card-sub">${escapeHtml(
-              error?.message || "Playbook failed to load."
-            )}</p>`;
-          }
-        });
-    }
+    startMinimalTimeCountdown();
     return;
   }
   if (tabName === SEC_TAB) {
