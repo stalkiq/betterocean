@@ -2054,6 +2054,52 @@ max-width: 270px;
   background: rgba(66, 92, 140, 0.12);
 }
 
+.time-location-card {
+  position: relative;
+}
+
+.time-location-suggestions {
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  top: 74px;
+  z-index: 30;
+  border: 1px solid #2e4468;
+  background: #0f1a30;
+  border-radius: 8px;
+  box-shadow: 0 8px 22px rgba(7, 11, 21, 0.45);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.time-suggestion-btn {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #203452;
+  background: transparent;
+  color: #dce9ff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  padding: 10px 11px;
+  cursor: pointer;
+}
+
+.time-suggestion-btn:last-child {
+  border-bottom: 0;
+}
+
+.time-suggestion-btn:hover {
+  background: rgba(59, 90, 142, 0.18);
+}
+
+.time-suggestion-btn span {
+  color: #9fb6dc;
+  font-size: 11px;
+}
+
 .agent-hero {
   border: 1px solid var(--line);
   border-radius: 10px;

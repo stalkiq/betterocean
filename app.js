@@ -148,9 +148,18 @@ let secTabState = {
   cache: {},
   cacheAt: {},
 };
+let timeTabState = {
+  query: "",
+  loadingSuggestions: false,
+  suggestions: [],
+  selectedLocation: null,
+  clockTimer: null,
+  searchDebounceTimer: null,
+};
 const SEC_QUICK_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "EXE", "ADM"];
 const DEFAULT_TICKER_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH"];
 const SHOPPING_10_TO_50_SYMBOLS = ["F", "PFE", "BAC", "INTC", "T", "VZ", "KHC", "CCL", "SNAP", "PARA"];
+const DEFAULT_USER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York";
 const SYMBOL_COMPANY_NAMES = {
   AAPL: "Apple",
   MSFT: "Microsoft",
@@ -1361,6 +1370,83 @@ function formatEtNowLabel() {
     day: "numeric",
   });
   return formatter.format(new Date());
+}
+
+function getSavedMarketLocation() {
+  const prefs = readUiPrefs();
+  const saved = prefs?.marketLocation;
+  if (!saved || typeof saved !== "object") return null;
+  const label = String(saved.label || "").trim();
+  const timeZone = String(saved.timeZone || "").trim();
+  if (!label || !timeZone) return null;
+  return {
+    id: String(saved.id || `${label}|${timeZone}`).trim(),
+    label,
+    timeZone,
+    latitude: Number(saved.latitude || 0),
+    longitude: Number(saved.longitude || 0),
+  };
+}
+
+function saveMarketLocation(location) {
+  if (!location || typeof location !== "object") return;
+  writeUiPrefs({
+    marketLocation: {
+      id: String(location.id || "").trim(),
+      label: String(location.label || "").trim(),
+      timeZone: String(location.timeZone || "").trim(),
+      latitude: Number(location.latitude || 0),
+      longitude: Number(location.longitude || 0),
+    },
+  });
+}
+
+function formatNowInTimeZone(timeZone) {
+  const safeZone = String(timeZone || "").trim() || DEFAULT_USER_TIMEZONE;
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: safeZone,
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+  return formatter.format(new Date());
+}
+
+async function loadTimePlaceSuggestions(query) {
+  const q = String(query || "").trim();
+  if (q.length < 2) return [];
+  const payload = await schwabApi(`/api/time/places?q=${encodeURIComponent(q)}`, { method: "GET" });
+  return Array.isArray(payload?.places) ? payload.places : [];
+}
+
+function startTimeTabClock() {
+  stopMarketCountdown();
+  const statusEl = document.getElementById("timeMarketState");
+  const countdownEl = document.getElementById("marketOpenCountdown");
+  const etNowEl = document.getElementById("timeEtNow");
+  const localNowEl = document.getElementById("timeLocalNow");
+  if (!statusEl || !countdownEl || !etNowEl || !localNowEl) return;
+
+  const update = () => {
+    const marketOpen = isUsMarketOpenNow();
+    const countdown = marketOpen ? computeNextMarketCloseCountdown() : computeNextMarketOpenCountdown();
+    statusEl.textContent = marketOpen ? "US Market Open" : "US Market Closed";
+    statusEl.className = `market-state-pill ${marketOpen ? "open" : "closed"}`;
+    countdownEl.textContent = marketOpen ? `Closes in ${formatCountdown(countdown)}` : `Opens in ${formatCountdown(countdown)}`;
+    etNowEl.textContent = `ET now: ${formatEtNowLabel()}`;
+    const selected = timeTabState.selectedLocation;
+    const locationLabel = selected?.label ? selected.label : "Your local timezone";
+    const localZone = selected?.timeZone || DEFAULT_USER_TIMEZONE;
+    localNowEl.textContent = `${locationLabel} (${localZone}) now: ${formatNowInTimeZone(localZone)}`;
+    applyMarketOpenTheme();
+  };
+
+  update();
+  marketCountdownTimer = setInterval(update, 1000);
 }
 
 function stopShoppingMarketClock() {
@@ -5141,133 +5227,108 @@ function activateTab(tabName) {
     return;
   }
   if (tabName === TIME_TAB) {
-    const targetTab = TIME_TAB;
-    workspaceTableWrap.innerHTML = '<div class="do-loading">Building opening bell playbook...</div>';
-    loadOpeningPlaybook()
-      .then(async () => {
-        if (currentTab !== targetTab) return;
-        openingPlaybookLoadedAt = Date.now();
-        const symbols = openingPlaybook.buckets.flatMap((bucket) =>
-          Array.isArray(bucket.tickers) ? bucket.tickers : []
-        );
-        await loadPublicQuotes(symbols).catch(() => ({}));
-
-        const bucketHtml = openingPlaybook.buckets
-          .map((bucket) => {
-            const tickerRows = (Array.isArray(bucket.tickers) ? bucket.tickers : [])
-              .map((symbol) => {
-                const quote = openingQuotesBySymbol[String(symbol).toUpperCase()];
-                if (!quote || quote.unavailable) {
-                  return `<tr><td>${symbol}</td><td colspan="6">Price unavailable</td></tr>`;
-                }
-                const pct = getOpenDeltaPercent(quote);
-                const trendClass = !Number.isFinite(pct)
-                  ? "value-flat"
-                  : pct > 0
-                    ? "value-up"
-                    : pct < 0
-                      ? "value-down"
-                      : "value-flat";
-                return `
-                  <tr>
-                    <td class="ticker-cell">${symbol}</td>
-                    <td>${renderPriceCell(quote.close)}</td>
-                    <td>${renderPriceCell(quote.open)}</td>
-                    <td>${renderPriceCell(quote.high)}</td>
-                    <td>${renderPriceCell(quote.low)}</td>
-                    <td class="${trendClass}">${formatPercent(pct)}</td>
-                    <td>${renderSignalPill(pct)}</td>
-                  </tr>
-                `;
-              })
-              .join("");
-            return `
-              <article class="schwab-card">
-                <h4>${bucket.name || "Bucket"}</h4>
-                <p class="schwab-card-sub">${bucket.thesis || "No thesis provided."}</p>
-                <div class="time-table-wrap">
-                  <table class="time-table">
-                    <thead>
-                      <tr>
-                        <th>Ticker</th>
-                        <th>Last</th>
-                        <th>Open</th>
-                        <th>High</th>
-                        <th>Low</th>
-                        <th>Open Δ%</th>
-                        <th>Signal</th>
-                      </tr>
-                    </thead>
-                    <tbody>${tickerRows || '<tr><td colspan="7">No tickers.</td></tr>'}</tbody>
-                  </table>
-                </div>
-              </article>
-            `;
-          })
-          .join("");
-        const openingAgentBriefs = openingPlaybook?.agentBriefs && typeof openingPlaybook.agentBriefs === "object"
-          ? openingPlaybook.agentBriefs
-          : {};
-        const openingAgentCards = [
-          { title: "Macro Agent", bullets: Array.isArray(openingAgentBriefs.macro) ? openingAgentBriefs.macro.slice(0, 3) : [] },
-          { title: "Sector Agent", bullets: Array.isArray(openingAgentBriefs.sector) ? openingAgentBriefs.sector.slice(0, 3) : [] },
-          { title: "Opening Agent", bullets: Array.isArray(openingAgentBriefs.opening) ? openingAgentBriefs.opening.slice(0, 3) : [] },
-        ]
-          .map((panel) => {
-            const items = panel.bullets.length ? panel.bullets : ["Brief unavailable right now."];
-            return `
-              <article class="schwab-card">
-                <h4>${panel.title}</h4>
-                <ul class="ticker-bullets">${items.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>
-              </article>
-            `;
-          })
-          .join("");
-
-        workspaceTableWrap.innerHTML = `
-          <div class="agent-view">
-            <section class="agent-hero">
-              <h3>Market Open Timer</h3>
-              <p>Countdown to next U.S. market open (ET) with Gradient AI opening-bell stock buckets.</p>
-            </section>
-            <section class="schwab-metrics">
-              <article class="schwab-metric-card">
-                <h4>Next market open in</h4>
-                <div class="schwab-metric-value" id="marketOpenCountdown">--:--:--</div>
-              </article>
-              <article class="schwab-metric-card">
-                <h4>AI Source</h4>
-                <div class="schwab-metric-value small">${openingPlaybook.source || "unknown"}</div>
-              </article>
-              <article class="schwab-metric-card">
-                <h4>Playbook Updated</h4>
-                <div class="schwab-metric-value small">${
-                  openingPlaybook.asOf ? new Date(openingPlaybook.asOf).toLocaleString() : "-"
-                }</div>
-              </article>
-            </section>
-            <section class="schwab-grid">
-              ${openingAgentCards}
-            </section>
-            <section class="schwab-grid">
-              ${bucketHtml || '<article class="schwab-card"><h4>No buckets</h4><p class="schwab-card-sub">Try Refresh to regenerate opening ideas.</p></article>'}
-            </section>
-            ${
-              openingPlaybook.notes
-                ? `<section class="schwab-card"><h4>AI Notes</h4><p class="schwab-card-sub">${openingPlaybook.notes}</p></section>`
-                : ""
-            }
-          </div>
-        `;
-        if (currentTab !== targetTab) return;
-        startMarketCountdown();
-      })
-      .catch((error) => {
-        if (currentTab !== targetTab) return;
-        workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
-          error.message || "Failed to load opening playbook."
-        }</p></div>`;
+    const savedLocation = getSavedMarketLocation();
+    timeTabState = {
+      ...timeTabState,
+      selectedLocation: savedLocation || timeTabState.selectedLocation || null,
+      query: savedLocation?.label || "",
+      suggestions: [],
+      loadingSuggestions: false,
+      searchDebounceTimer: null,
+    };
+    workspaceTableWrap.innerHTML = `
+      <div class="agent-view">
+        <section class="agent-hero">
+          <h3>Market Time Center</h3>
+          <p>Search your location to view market timing in your timezone.</p>
+        </section>
+        <section class="schwab-card time-location-card">
+          <label class="trade-label" for="timeLocationInput">Your location</label>
+          <input id="timeLocationInput" class="trade-input" type="text" placeholder="Search city or state (ex: Fort Myers, FL)" autocomplete="off" value="${escapeHtml(
+            timeTabState.query || ""
+          )}" />
+          <div id="timeLocationSuggestions" class="time-location-suggestions" hidden></div>
+          <p class="settings-desc">Pick a location to set timezone context. Market open status updates live.</p>
+        </section>
+        <section class="schwab-metrics">
+          <article class="schwab-metric-card">
+            <h4>Market status</h4>
+            <div class="schwab-metric-value small"><span id="timeMarketState" class="market-state-pill closed">--</span></div>
+          </article>
+          <article class="schwab-metric-card">
+            <h4>US market clock</h4>
+            <div class="schwab-metric-value small" id="marketOpenCountdown">--:--:--</div>
+          </article>
+          <article class="schwab-metric-card">
+            <h4>Reference</h4>
+            <div class="schwab-metric-value small" id="timeEtNow">ET now: --</div>
+          </article>
+        </section>
+        <section class="schwab-card">
+          <h4>Your timezone clock</h4>
+          <p class="schwab-card-sub" id="timeLocalNow">Loading timezone clock...</p>
+        </section>
+      </div>
+    `;
+    startTimeTabClock();
+    const locationInput = document.getElementById("timeLocationInput");
+    const suggestionsWrap = document.getElementById("timeLocationSuggestions");
+    const renderSuggestions = (places = []) => {
+      if (!suggestionsWrap) return;
+      if (!Array.isArray(places) || !places.length) {
+        suggestionsWrap.hidden = true;
+        suggestionsWrap.innerHTML = "";
+        return;
+      }
+      suggestionsWrap.hidden = false;
+      suggestionsWrap.innerHTML = places
+        .map(
+          (place, index) => `
+          <button type="button" class="time-suggestion-btn" data-time-suggestion-idx="${index}">
+            <strong>${escapeHtml(place.label || place.name || "Unknown location")}</strong>
+            <span>${escapeHtml(place.timeZone || "")}</span>
+          </button>
+        `
+        )
+        .join("");
+      suggestionsWrap.querySelectorAll("[data-time-suggestion-idx]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const idx = Number(btn.getAttribute("data-time-suggestion-idx"));
+          const selected = places[idx];
+          if (!selected) return;
+          timeTabState = {
+            ...timeTabState,
+            selectedLocation: selected,
+            query: String(selected.label || selected.name || "").trim(),
+            suggestions: [],
+          };
+          saveMarketLocation(selected);
+          if (locationInput) locationInput.value = timeTabState.query;
+          renderSuggestions([]);
+          startTimeTabClock();
+        });
       });
+    };
+    locationInput?.addEventListener("input", () => {
+      const nextQuery = String(locationInput.value || "").trim();
+      timeTabState = { ...timeTabState, query: nextQuery };
+      if (timeTabState.searchDebounceTimer) clearTimeout(timeTabState.searchDebounceTimer);
+      if (nextQuery.length < 2) {
+        renderSuggestions([]);
+        return;
+      }
+      timeTabState.searchDebounceTimer = setTimeout(() => {
+        loadTimePlaceSuggestions(nextQuery)
+          .then((places) => {
+            if (currentTab !== TIME_TAB) return;
+            timeTabState = { ...timeTabState, suggestions: places };
+            renderSuggestions(places);
+          })
+          .catch(() => {
+            renderSuggestions([]);
+          });
+      }, 220);
+    });
     return;
   }
   if (tabName === SEC_TAB) {

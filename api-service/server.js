@@ -30,6 +30,7 @@ const SCHWAB_CACHE_TTL_MS = Number(process.env.SCHWAB_CACHE_TTL_MS || 12 * 1000)
 const SCHWAB_QUOTES_CACHE_TTL_MS = Number(process.env.SCHWAB_QUOTES_CACHE_TTL_MS || 5 * 1000);
 const SCHWAB_RECENT_ORDERS_CACHE_TTL_MS = Number(process.env.SCHWAB_RECENT_ORDERS_CACHE_TTL_MS || 10 * 1000);
 const SEC_READABLE_TTL_MS = Number(process.env.SEC_READABLE_TTL_MS || 60 * 60 * 1000);
+const TIME_LOCATION_TTL_MS = Number(process.env.TIME_LOCATION_TTL_MS || 12 * 60 * 60 * 1000);
 const SEC_COMPANY_TICKERS_TTL_MS = Number(process.env.SEC_COMPANY_TICKERS_TTL_MS || 24 * 60 * 60 * 1000);
 const TICKER_PREWARM_INTERVAL_MS = Number(process.env.TICKER_PREWARM_INTERVAL_MS || 120 * 1000);
 const REDIS_URL = process.env.REDIS_URL || process.env.DO_REDIS_URL || "";
@@ -2973,6 +2974,57 @@ app.get(["/market/company-names", "/api/market/company-names"], async (req, res)
     });
   } catch (err) {
     sendJson(res, 502, { error: err.message || "Failed to load company names." });
+  }
+});
+
+app.get(["/time/places", "/api/time/places"], async (req, res) => {
+  const query = String(req.query.q || "").trim();
+  if (query.length < 2) {
+    sendJson(res, 200, { query, places: [] });
+    return;
+  }
+  const normalizedQ = query.toLowerCase().replace(/\s+/g, " ").slice(0, 80);
+  const redisKey = buildRedisCacheKey("time-places-v1", normalizedQ);
+  const redisCached = await getRedisCacheJson(redisKey);
+  if (redisCached && Array.isArray(redisCached.places)) {
+    sendJson(res, 200, redisCached);
+    return;
+  }
+  try {
+    const upstream = await getText(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(normalizedQ)}&count=8&language=en&format=json`
+    );
+    if (upstream.status < 200 || upstream.status >= 300) {
+      throw new Error(`Location search failed (${upstream.status})`);
+    }
+    const parsed = safeParseJson(upstream.data || "{}") || {};
+    const places = (Array.isArray(parsed?.results) ? parsed.results : [])
+      .map((entry) => {
+        const name = String(entry?.name || "").trim();
+        const admin1 = String(entry?.admin1 || "").trim();
+        const country = String(entry?.country || "").trim();
+        const timeZone = String(entry?.timezone || "").trim();
+        const latitude = Number(entry?.latitude || 0);
+        const longitude = Number(entry?.longitude || 0);
+        if (!name || !timeZone || !Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+        const label = [name, admin1, country].filter(Boolean).join(", ");
+        return {
+          id: `${name}|${admin1}|${country}|${timeZone}`.toLowerCase().replace(/\s+/g, "-"),
+          label,
+          name,
+          admin1,
+          country,
+          timeZone,
+          latitude,
+          longitude,
+        };
+      })
+      .filter(Boolean);
+    const payload = { query, places };
+    await setRedisCacheJson(redisKey, payload, TIME_LOCATION_TTL_MS);
+    sendJson(res, 200, payload);
+  } catch (err) {
+    sendJson(res, 200, { query, places: [], error: err.message || "Location search unavailable." });
   }
 });
 
