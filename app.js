@@ -20,6 +20,7 @@ const SCHWAB_CONNECT_TAB = "Schwab Connect";
 const PORTFOLIO_TAB = "My Holdings";
 const INVESTMENTS_TAB = "Investments";
 const TICKER_INTEL_TAB = "Ticker Intel";
+const DIVIDEND_TAB = "Dividend";
 const TIME_TAB = "Time";
 const SEC_TAB = "SEC";
 const SHOPPING_TAB = "Shopping";
@@ -31,6 +32,7 @@ const TAB_THEME_CLASS_MAP = {
   [PORTFOLIO_TAB]: "theme-holdings",
   [INVESTMENTS_TAB]: "theme-investments",
   [TICKER_INTEL_TAB]: "theme-ticker-intel",
+  [DIVIDEND_TAB]: "theme-investments",
   [TIME_TAB]: "theme-time",
   [SEC_TAB]: "theme-time",
   [SHOPPING_TAB]: "theme-shopping",
@@ -50,6 +52,7 @@ const TICKER_DEFAULT_VISIBLE_COUNT = 90;
 const TICKER_VISIBLE_INCREMENT = 60;
 const AGENT_BRIEF_TTL_MS = 3 * 60 * 1000;
 const SEC_BRIEF_TAB_TTL_MS = 10 * 60 * 1000;
+const DIVIDEND_TAB_TTL_MS = 5 * 60 * 1000;
 
 const AGENTS = [
   {
@@ -114,7 +117,7 @@ const AGENTS = [
 const AGENT_BY_ID = Object.fromEntries(AGENTS.map((agent) => [agent.id, agent]));
 const AGENT_BY_TAB = Object.fromEntries(AGENTS.map((agent) => [agent.tab, agent]));
 
-const openTabs = new Set([HOME_TAB, TICKER_INTEL_TAB, TIME_TAB]);
+const openTabs = new Set([HOME_TAB, TICKER_INTEL_TAB, DIVIDEND_TAB, TIME_TAB]);
 let currentTab = HOME_TAB;
 let currentAgentId = AGENTS[0].id;
 const announcedAgents = new Set();
@@ -123,6 +126,7 @@ let chatHistory = [];
 let schwabSession = { connected: false };
 let schwabData = { accounts: null, openOrders: null, accountError: "" };
 let investmentsMarket = { assets: [], updatedAt: null, beginnerBrief: null };
+let dividendLeadersState = { rows: [], updatedAt: 0, loading: false, error: "" };
 let openingPlaybook = { buckets: [], asOf: null, agentBriefs: null, playbook: [], summary: "", trigger: "" };
 let openingQuotesBySymbol = {};
 let secTabState = {
@@ -154,6 +158,20 @@ let timeTabState = {
 const SEC_QUICK_SYMBOLS = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "EXE", "ADM"];
 const DEFAULT_TICKER_WATCHLIST = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "XOM", "UNH"];
 const SHOPPING_10_TO_50_SYMBOLS = ["F", "PFE", "BAC", "INTC", "T", "VZ", "KHC", "CCL", "SNAP", "PARA"];
+const DIVIDEND_LEADER_UNIVERSE = [
+  { symbol: "MO", estYield: 8.7, frequency: "Quarterly", focus: "Consumer Staples" },
+  { symbol: "BTI", estYield: 9.3, frequency: "Quarterly", focus: "Consumer Staples" },
+  { symbol: "VZ", estYield: 6.8, frequency: "Quarterly", focus: "Telecom" },
+  { symbol: "T", estYield: 6.2, frequency: "Quarterly", focus: "Telecom" },
+  { symbol: "O", estYield: 5.9, frequency: "Monthly", focus: "REIT" },
+  { symbol: "SPG", estYield: 5.4, frequency: "Quarterly", focus: "REIT" },
+  { symbol: "PFE", estYield: 6.0, frequency: "Quarterly", focus: "Healthcare" },
+  { symbol: "CVX", estYield: 4.1, frequency: "Quarterly", focus: "Energy" },
+  { symbol: "XOM", estYield: 3.4, frequency: "Quarterly", focus: "Energy" },
+  { symbol: "IBM", estYield: 3.6, frequency: "Quarterly", focus: "Technology" },
+  { symbol: "ABBV", estYield: 3.8, frequency: "Quarterly", focus: "Healthcare" },
+  { symbol: "KMI", estYield: 6.1, frequency: "Quarterly", focus: "Energy Infrastructure" },
+];
 const DEFAULT_USER_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York";
 const TIME_ZONE_PRESETS = [
   { key: "et", label: "ET", timeZone: "America/New_York" },
@@ -404,6 +422,41 @@ async function loadInvestmentsMarketData() {
     beginnerBrief: data?.beginnerBrief || null,
   };
   return investmentsMarket;
+}
+
+async function loadDividendLeadersData({ force = false } = {}) {
+  const isFresh =
+    Array.isArray(dividendLeadersState.rows) &&
+    dividendLeadersState.rows.length > 0 &&
+    Date.now() - Number(dividendLeadersState.updatedAt || 0) < DIVIDEND_TAB_TTL_MS;
+  if (!force && isFresh) return dividendLeadersState;
+  dividendLeadersState = { ...dividendLeadersState, loading: true, error: "" };
+  const symbols = DIVIDEND_LEADER_UNIVERSE.map((item) => item.symbol).join(",");
+  const data = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(symbols)}`, { method: "GET" });
+  const quotes = Array.isArray(data?.quotes) ? data.quotes : [];
+  const quoteBySymbol = Object.fromEntries(
+    quotes.map((quote) => [String(quote?.symbol || quote?.label || "").toUpperCase(), quote])
+  );
+  const rows = DIVIDEND_LEADER_UNIVERSE.map((item) => {
+    const quote = quoteBySymbol[item.symbol] || {};
+    const price = Number(quote?.close);
+    return {
+      symbol: item.symbol,
+      companyName: String(quote?.companyName || quote?.label || item.symbol),
+      estYield: Number(item.estYield || 0),
+      frequency: item.frequency,
+      focus: item.focus,
+      price: Number.isFinite(price) ? price : null,
+      asOf: quote?.asOf || data?.updatedAt || null,
+    };
+  }).sort((a, b) => b.estYield - a.estYield);
+  dividendLeadersState = {
+    rows,
+    updatedAt: Date.now(),
+    loading: false,
+    error: "",
+  };
+  return dividendLeadersState;
 }
 
 async function loadOpeningPlaybook() {
@@ -3839,6 +3892,7 @@ function isPermanentTab(tabName) {
   return (
     tabName === HOME_TAB ||
     tabName === TICKER_INTEL_TAB ||
+    tabName === DIVIDEND_TAB ||
     tabName === TIME_TAB
   );
 }
@@ -4051,6 +4105,52 @@ function renderInvestmentsView() {
           </thead>
           <tbody>${rows || '<tr><td colspan="9">No market data available.</td></tr>'}</tbody>
         </table>
+      </section>
+    </div>
+  `;
+}
+
+function renderDividendView() {
+  const rows = Array.isArray(dividendLeadersState.rows) ? dividendLeadersState.rows : [];
+  const updatedAt = dividendLeadersState.updatedAt ? new Date(dividendLeadersState.updatedAt).toLocaleString() : "-";
+  const rowHtml = rows
+    .map((row) => `
+      <tr>
+        <td class="ticker-cell">${escapeHtml(row.symbol)}</td>
+        <td>${escapeHtml(row.companyName)}</td>
+        <td>${row.price != null ? `$${Number(row.price).toFixed(2)}` : "No data"}</td>
+        <td class="value-up">${Number(row.estYield || 0).toFixed(1)}%</td>
+        <td>${escapeHtml(row.frequency || "-")}</td>
+        <td>${escapeHtml(row.focus || "-")}</td>
+      </tr>
+    `)
+    .join("");
+  workspaceTableWrap.innerHTML = `
+    <div class="agent-view">
+      <section class="agent-hero">
+        <h3>Dividend</h3>
+        <p>Highest dividend payout leaders with live prices and estimated annual yield.</p>
+      </section>
+      <section class="schwab-card">
+        <h4>Dividend leaders</h4>
+        <p class="schwab-card-sub">Updated: ${escapeHtml(updatedAt)}${rows.length ? ` • ${rows.length} symbols` : ""}</p>
+        <div class="time-table-wrap">
+          <table class="time-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Company</th>
+                <th>Price</th>
+                <th>Est. Yield</th>
+                <th>Payout</th>
+                <th>Focus</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowHtml || '<tr><td colspan="6">No dividend leaders available right now.</td></tr>'}
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
   `;
@@ -5168,6 +5268,7 @@ function activateTab(tabName) {
     tabName !== SCHWAB_CONNECT_TAB &&
     tabName !== INVESTMENTS_TAB &&
     tabName !== TICKER_INTEL_TAB &&
+    tabName !== DIVIDEND_TAB &&
     tabName !== TIME_TAB &&
     tabName !== SEC_TAB &&
     tabName !== SHOPPING_TAB &&
@@ -5198,6 +5299,8 @@ function activateTab(tabName) {
         ? "Public market dashboard"
           : tabName === TICKER_INTEL_TAB
             ? "Ticker list + inline ticker workspace"
+          : tabName === DIVIDEND_TAB
+            ? "Highest dividend payout leaders"
         : tabName === TIME_TAB
           ? "Market clock, sessions, and schedule"
       : tabName === SEC_TAB
@@ -5315,6 +5418,22 @@ function activateTab(tabName) {
           error: error.message || "Failed to build ticker report.",
         };
         renderTickerIntelView();
+      });
+    return;
+  }
+  if (tabName === DIVIDEND_TAB) {
+    const targetTab = DIVIDEND_TAB;
+    workspaceTableWrap.innerHTML = '<div class="do-loading">Loading dividend leaders...</div>';
+    loadDividendLeadersData()
+      .then(() => {
+        if (currentTab !== targetTab) return;
+        renderDividendView();
+      })
+      .catch((error) => {
+        if (currentTab !== targetTab) return;
+        workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
+          error.message || "Failed to load dividend leaders."
+        }</p></div>`;
       });
     return;
   }
@@ -5488,6 +5607,22 @@ workspaceRefreshBtn?.addEventListener("click", () => {
       });
     return;
   }
+  if (currentTab === DIVIDEND_TAB) {
+    const targetTab = DIVIDEND_TAB;
+    workspaceTableWrap.innerHTML = '<div class="do-loading">Refreshing dividend leaders...</div>';
+    loadDividendLeadersData({ force: true })
+      .then(() => {
+        if (currentTab !== targetTab) return;
+        renderDividendView();
+      })
+      .catch((error) => {
+        if (currentTab !== targetTab) return;
+        workspaceTableWrap.innerHTML = `<div class="do-error"><strong>Error</strong><p>${
+          error.message || "Failed to refresh dividend leaders."
+        }</p></div>`;
+      });
+    return;
+  }
   if (currentTab === TIME_TAB) {
     activateTab(TIME_TAB);
     return;
@@ -5637,11 +5772,12 @@ chatForm.addEventListener("submit", async (e) => {
     !schwabSession.connected &&
     currentTab !== INVESTMENTS_TAB &&
     currentTab !== TICKER_INTEL_TAB &&
+    currentTab !== DIVIDEND_TAB &&
     currentTab !== TIME_TAB
   ) {
     appendChatMessage(
       "assistant",
-      "Please connect your Charles Schwab account first for account-specific analysis. You can still use the Investments, Ticker Intel, and Time tabs without login.",
+        "Please connect your Charles Schwab account first for account-specific analysis. You can still use the Dividend, Ticker Intel, and Time tabs without login.",
       "msg-error"
     );
     openTabs.add(SCHWAB_CONNECT_TAB);
@@ -5698,6 +5834,7 @@ async function initApp() {
 
   renderTabs(HOME_TAB);
   openTabs.add(TICKER_INTEL_TAB);
+  openTabs.add(DIVIDEND_TAB);
   openTabs.add(TIME_TAB);
   if (schwabSession.connected) {
     activateTab(HOME_TAB);
