@@ -4180,9 +4180,8 @@ function renderDividendView() {
           <input
             id="dividendCalcAmount"
             class="trade-input"
-            type="number"
-            min="0"
-            step="50"
+            type="text"
+            inputmode="decimal"
             value="${Number.isFinite(calcAmount) ? Math.round(calcAmount) : 1000}"
             placeholder="Amount to invest"
           />
@@ -4190,15 +4189,15 @@ function renderDividendView() {
         <div class="schwab-metrics" style="margin-top:10px;">
           <article class="schwab-metric-card">
             <h4>Est. annual dividend</h4>
-            <div class="schwab-metric-value small">$${estAnnual.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+            <div class="schwab-metric-value small" id="dividendCalcAnnual">$${estAnnual.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
           </article>
           <article class="schwab-metric-card">
             <h4>Est. monthly dividend</h4>
-            <div class="schwab-metric-value small">$${estMonthly.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+            <div class="schwab-metric-value small" id="dividendCalcMonthly">$${estMonthly.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
           </article>
           <article class="schwab-metric-card">
             <h4>Yield used</h4>
-            <div class="schwab-metric-value small">${estYield.toFixed(1)}%</div>
+            <div class="schwab-metric-value small" id="dividendCalcYield">${estYield.toFixed(1)}%</div>
           </article>
         </div>
       </section>
@@ -4237,14 +4236,29 @@ function renderDividendView() {
   `;
   const calcSymbolEl = document.getElementById("dividendCalcSymbol");
   const calcAmountEl = document.getElementById("dividendCalcAmount");
+  const annualEl = document.getElementById("dividendCalcAnnual");
+  const monthlyEl = document.getElementById("dividendCalcMonthly");
+  const yieldEl = document.getElementById("dividendCalcYield");
+  const updateDividendCalc = () => {
+    const safeSymbol = String(dividendLeadersState.selectedSymbol || "").toUpperCase();
+    const currentRow = rows.find((row) => row.symbol === safeSymbol) || rows[0] || null;
+    const yieldPct = Number(currentRow?.estYield || 0);
+    const amount = Math.max(0, Number(dividendLeadersState.calcAmount || 0));
+    const annual = amount * (yieldPct / 100);
+    const monthly = annual / 12;
+    if (annualEl) annualEl.textContent = `$${annual.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+    if (monthlyEl) monthlyEl.textContent = `$${monthly.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+    if (yieldEl) yieldEl.textContent = `${yieldPct.toFixed(1)}%`;
+  };
   calcSymbolEl?.addEventListener("change", () => {
     dividendLeadersState = { ...dividendLeadersState, selectedSymbol: String(calcSymbolEl.value || "").toUpperCase() };
-    renderDividendView();
+    updateDividendCalc();
   });
   calcAmountEl?.addEventListener("input", () => {
-    const next = Math.max(0, Number(calcAmountEl.value || 0));
+    const cleaned = String(calcAmountEl.value || "").replace(/[^\d.]/g, "");
+    const next = Math.max(0, Number(cleaned || 0));
     dividendLeadersState = { ...dividendLeadersState, calcAmount: Number.isFinite(next) ? next : 0 };
-    renderDividendView();
+    updateDividendCalc();
   });
 }
 
