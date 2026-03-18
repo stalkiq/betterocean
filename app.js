@@ -126,7 +126,14 @@ let chatHistory = [];
 let schwabSession = { connected: false };
 let schwabData = { accounts: null, openOrders: null, accountError: "" };
 let investmentsMarket = { assets: [], updatedAt: null, beginnerBrief: null };
-let dividendLeadersState = { rows: [], updatedAt: 0, loading: false, error: "" };
+let dividendLeadersState = {
+  rows: [],
+  updatedAt: 0,
+  loading: false,
+  error: "",
+  calcAmount: 1000,
+  selectedSymbol: "MO",
+};
 let openingPlaybook = { buckets: [], asOf: null, agentBriefs: null, playbook: [], summary: "", trigger: "" };
 let openingQuotesBySymbol = {};
 let secTabState = {
@@ -432,30 +439,50 @@ async function loadDividendLeadersData({ force = false } = {}) {
   if (!force && isFresh) return dividendLeadersState;
   dividendLeadersState = { ...dividendLeadersState, loading: true, error: "" };
   const symbols = DIVIDEND_LEADER_UNIVERSE.map((item) => item.symbol).join(",");
-  const data = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(symbols)}`, { method: "GET" });
-  const quotes = Array.isArray(data?.quotes) ? data.quotes : [];
-  const quoteBySymbol = Object.fromEntries(
-    quotes.map((quote) => [String(quote?.symbol || quote?.label || "").toUpperCase(), quote])
-  );
-  const rows = DIVIDEND_LEADER_UNIVERSE.map((item) => {
-    const quote = quoteBySymbol[item.symbol] || {};
-    const price = Number(quote?.close);
-    return {
+  try {
+    const data = await schwabApi(`/api/market/quotes?symbols=${encodeURIComponent(symbols)}`, { method: "GET" });
+    const quotes = Array.isArray(data?.quotes) ? data.quotes : [];
+    const quoteBySymbol = Object.fromEntries(
+      quotes.map((quote) => [String(quote?.symbol || quote?.label || "").toUpperCase(), quote])
+    );
+    const rows = DIVIDEND_LEADER_UNIVERSE.map((item) => {
+      const quote = quoteBySymbol[item.symbol] || {};
+      const price = Number(quote?.close);
+      return {
+        symbol: item.symbol,
+        companyName: String(quote?.companyName || quote?.label || SYMBOL_COMPANY_NAMES[item.symbol] || item.symbol),
+        estYield: Number(item.estYield || 0),
+        frequency: item.frequency,
+        focus: item.focus,
+        price: Number.isFinite(price) ? price : null,
+        asOf: quote?.asOf || data?.updatedAt || null,
+      };
+    }).sort((a, b) => b.estYield - a.estYield);
+    dividendLeadersState = {
+      ...dividendLeadersState,
+      rows,
+      updatedAt: Date.now(),
+      loading: false,
+      error: "",
+    };
+  } catch (error) {
+    const fallbackRows = DIVIDEND_LEADER_UNIVERSE.map((item) => ({
       symbol: item.symbol,
-      companyName: String(quote?.companyName || quote?.label || item.symbol),
+      companyName: SYMBOL_COMPANY_NAMES[item.symbol] || item.symbol,
       estYield: Number(item.estYield || 0),
       frequency: item.frequency,
       focus: item.focus,
-      price: Number.isFinite(price) ? price : null,
-      asOf: quote?.asOf || data?.updatedAt || null,
+      price: null,
+      asOf: null,
+    })).sort((a, b) => b.estYield - a.estYield);
+    dividendLeadersState = {
+      ...dividendLeadersState,
+      rows: fallbackRows,
+      updatedAt: Date.now(),
+      loading: false,
+      error: error?.message || "Live quotes are delayed. Showing cached dividend list.",
     };
-  }).sort((a, b) => b.estYield - a.estYield);
-  dividendLeadersState = {
-    rows,
-    updatedAt: Date.now(),
-    loading: false,
-    error: "",
-  };
+  }
   return dividendLeadersState;
 }
 
@@ -4113,6 +4140,12 @@ function renderInvestmentsView() {
 function renderDividendView() {
   const rows = Array.isArray(dividendLeadersState.rows) ? dividendLeadersState.rows : [];
   const updatedAt = dividendLeadersState.updatedAt ? new Date(dividendLeadersState.updatedAt).toLocaleString() : "-";
+  const selectedSymbol = String(dividendLeadersState.selectedSymbol || rows?.[0]?.symbol || "MO").toUpperCase();
+  const selectedRow = rows.find((row) => row.symbol === selectedSymbol) || rows[0] || null;
+  const calcAmount = Math.max(0, Number(dividendLeadersState.calcAmount || 0));
+  const estYield = Number(selectedRow?.estYield || 0);
+  const estAnnual = calcAmount * (estYield / 100);
+  const estMonthly = estAnnual / 12;
   const rowHtml = rows
     .map((row) => `
       <tr>
@@ -4132,8 +4165,56 @@ function renderDividendView() {
         <p>Highest dividend payout leaders with live prices and estimated annual yield.</p>
       </section>
       <section class="schwab-card">
+        <h4>Mock dividend investment</h4>
+        <div class="ticker-filters-inline">
+          <select id="dividendCalcSymbol" class="trade-input">
+            ${rows
+              .map(
+                (row) =>
+                  `<option value="${escapeHtml(row.symbol)}" ${row.symbol === selectedSymbol ? "selected" : ""}>${escapeHtml(
+                    row.symbol
+                  )} - ${escapeHtml(row.companyName)}</option>`
+              )
+              .join("")}
+          </select>
+          <input
+            id="dividendCalcAmount"
+            class="trade-input"
+            type="number"
+            min="0"
+            step="50"
+            value="${Number.isFinite(calcAmount) ? Math.round(calcAmount) : 1000}"
+            placeholder="Amount to invest"
+          />
+        </div>
+        <div class="schwab-metrics" style="margin-top:10px;">
+          <article class="schwab-metric-card">
+            <h4>Est. annual dividend</h4>
+            <div class="schwab-metric-value small">$${estAnnual.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+          </article>
+          <article class="schwab-metric-card">
+            <h4>Est. monthly dividend</h4>
+            <div class="schwab-metric-value small">$${estMonthly.toLocaleString(undefined, { maximumFractionDigits: 2 })}</div>
+          </article>
+          <article class="schwab-metric-card">
+            <h4>Yield used</h4>
+            <div class="schwab-metric-value small">${estYield.toFixed(1)}%</div>
+          </article>
+        </div>
+      </section>
+      <section class="schwab-card">
         <h4>Dividend leaders</h4>
         <p class="schwab-card-sub">Updated: ${escapeHtml(updatedAt)}${rows.length ? ` • ${rows.length} symbols` : ""}</p>
+        ${
+          dividendLeadersState.loading
+            ? '<p class="settings-desc">Refreshing live quotes...</p>'
+            : ""
+        }
+        ${
+          dividendLeadersState.error
+            ? `<p class="settings-desc">${escapeHtml(dividendLeadersState.error)}</p>`
+            : ""
+        }
         <div class="time-table-wrap">
           <table class="time-table">
             <thead>
@@ -4154,6 +4235,17 @@ function renderDividendView() {
       </section>
     </div>
   `;
+  const calcSymbolEl = document.getElementById("dividendCalcSymbol");
+  const calcAmountEl = document.getElementById("dividendCalcAmount");
+  calcSymbolEl?.addEventListener("change", () => {
+    dividendLeadersState = { ...dividendLeadersState, selectedSymbol: String(calcSymbolEl.value || "").toUpperCase() };
+    renderDividendView();
+  });
+  calcAmountEl?.addEventListener("input", () => {
+    const next = Math.max(0, Number(calcAmountEl.value || 0));
+    dividendLeadersState = { ...dividendLeadersState, calcAmount: Number.isFinite(next) ? next : 0 };
+    renderDividendView();
+  });
 }
 
 function renderAgentView(agent) {
@@ -5423,7 +5515,21 @@ function activateTab(tabName) {
   }
   if (tabName === DIVIDEND_TAB) {
     const targetTab = DIVIDEND_TAB;
-    workspaceTableWrap.innerHTML = '<div class="do-loading">Loading dividend leaders...</div>';
+    if (!Array.isArray(dividendLeadersState.rows) || !dividendLeadersState.rows.length) {
+      dividendLeadersState = {
+        ...dividendLeadersState,
+        rows: DIVIDEND_LEADER_UNIVERSE.map((item) => ({
+          symbol: item.symbol,
+          companyName: SYMBOL_COMPANY_NAMES[item.symbol] || item.symbol,
+          estYield: Number(item.estYield || 0),
+          frequency: item.frequency,
+          focus: item.focus,
+          price: null,
+          asOf: null,
+        })).sort((a, b) => b.estYield - a.estYield),
+      };
+    }
+    renderDividendView();
     loadDividendLeadersData()
       .then(() => {
         if (currentTab !== targetTab) return;
@@ -5609,7 +5715,8 @@ workspaceRefreshBtn?.addEventListener("click", () => {
   }
   if (currentTab === DIVIDEND_TAB) {
     const targetTab = DIVIDEND_TAB;
-    workspaceTableWrap.innerHTML = '<div class="do-loading">Refreshing dividend leaders...</div>';
+    dividendLeadersState = { ...dividendLeadersState, loading: true };
+    renderDividendView();
     loadDividendLeadersData({ force: true })
       .then(() => {
         if (currentTab !== targetTab) return;
